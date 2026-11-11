@@ -1,0 +1,12 @@
+# BEGIN InfinityFree Managed Code
+# DO NOT EDIT - MANAGED BY THE MEMBERS AREA
+php_value date.timezone Asia/Kolkata
+# END InfinityFree Managed Code
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>

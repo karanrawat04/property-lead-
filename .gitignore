@@ -1,0 +1,6 @@
+backend/config/config.local.php
+deploy-htdocs/
+frontend/node_modules/
+frontend/dist/
+frontend/.angular/
+

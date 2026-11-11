@@ -1,0 +1,12 @@
+Options -MultiViews
+RewriteEngine On
+
+# Preserve Authorization header for PHP on InfinityFree / Apache CGI
+CGIPassAuth On
+RewriteCond %{HTTP:Authorization} ^(.*)
+RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.php [QSA,L]
+
