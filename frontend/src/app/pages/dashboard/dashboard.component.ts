@@ -16,7 +16,7 @@ import { formatIstDateTime } from '../../core/validators';
     <div class="page-header">
       <div>
         <h2 class="page-title">
-          {{ (auth.isAdmin() || stats()?.role === 'admin') ? 'Business Dashboard' : 'Agent Work Desk' }}
+          {{ (auth.isAdmin() || stats()?.role === 'admin') ? 'Business Dashboard hey karan' : 'Agent Work Desk' }}
         </h2>
         <p class="page-subtitle">
           {{ (auth.isAdmin() || stats()?.role === 'admin')

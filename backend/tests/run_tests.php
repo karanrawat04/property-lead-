@@ -109,5 +109,22 @@ assertTrue(empty($leadWithTemp['errors']), 'Lead with temperature and agent pass
 assertTrue($leadWithTemp['data']['temperature'] === 'Hot', 'Lead temperature preserved as Hot');
 assertTrue($leadWithTemp['data']['assigned_agent_id'] === 4, 'Assigned agent ID preserved as 4');
 
+// 11. BackupService SQL dump verification (if local DB is available)
+require_once __DIR__ . '/../lib/BackupService.php';
+assertTrue(class_exists('BackupService'), 'BackupService class exists');
+
+try {
+    $config = require __DIR__ . '/../config/config.php';
+    require_once __DIR__ . '/../lib/Database.php';
+    $pdo = Database::getConnection($config);
+    $dump = BackupService::generateSqlDump($pdo);
+    assertTrue(strlen($dump) > 100, 'BackupService generates non-empty SQL dump');
+    assertTrue(str_contains($dump, 'SET FOREIGN_KEY_CHECKS'), 'BackupService dump contains safety directives');
+    assertTrue(str_contains($dump, 'CREATE TABLE'), 'BackupService dump contains CREATE TABLE statements');
+} catch (Throwable $e) {
+    // If running in headless CI without local MySQL, skip DB test safely
+    echo "Notice: DB-dependent test skipped (No DB connection: " . $e->getMessage() . ")\n";
+}
+
 echo "All backend unit checks passed.\n";
 

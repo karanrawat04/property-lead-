@@ -11,8 +11,9 @@ class Mailer
 {
     /**
      * @param string|string[] $toEmails
+     * @param array $attachments Array of ['name' => string, 'content' => string, 'type' => string, 'is_base64' => bool]
      */
-    public static function send(array $settings, $toEmails, string $subject, string $htmlBody, string $textBody, string $appSecret): array
+    public static function send(array $settings, $toEmails, string $subject, string $htmlBody, string $textBody, string $appSecret, array $attachments = []): array
     {
         $transport = $settings['transport'] ?? 'brevo_api';
         $senderName = trim((string)($settings['sender_name'] ?? 'Property Lead Manager'));
@@ -55,7 +56,7 @@ class Mailer
                     ),
                 ];
             }
-            return self::sendViaBrevo($apiKey, $senderName, $senderEmail, $recipients, $subject, $htmlBody, $textBody);
+            return self::sendViaBrevo($apiKey, $senderName, $senderEmail, $recipients, $subject, $htmlBody, $textBody, $attachments);
         }
 
         if ($transport === 'resend_api') {
@@ -63,7 +64,7 @@ class Mailer
             if ($apiKey === '') {
                 return ['ok' => false, 'error' => 'Resend API Key is not configured.'];
             }
-            return self::sendViaResend($apiKey, $senderName, $senderEmail, $recipients, $subject, $htmlBody, $textBody);
+            return self::sendViaResend($apiKey, $senderName, $senderEmail, $recipients, $subject, $htmlBody, $textBody, $attachments);
         }
 
         if ($transport === 'smtp') {
@@ -79,17 +80,42 @@ class Mailer
                 $recipients,
                 $subject,
                 $htmlBody,
-                $textBody
+                $textBody,
+                $attachments
             );
         }
 
         // php_mail fallback
+        $boundary = 'plm_mail_' . bin2hex(random_bytes(8));
         $headers = [
             'MIME-Version: 1.0',
-            'Content-type: text/html; charset=UTF-8',
             sprintf('From: %s <%s>', self::encodeHeader($senderName), $senderEmail),
         ];
-        $ok = @mail(implode(', ', $recipients), $subject, $htmlBody, implode("\r\n", $headers));
+
+        if (empty($attachments)) {
+            $headers[] = 'Content-type: text/html; charset=UTF-8';
+            $mailBody = $htmlBody;
+        } else {
+            $headers[] = 'Content-Type: multipart/mixed; boundary="' . $boundary . '"';
+            $mailBody = "--$boundary\r\n"
+                . "Content-Type: text/html; charset=UTF-8\r\n\r\n"
+                . $htmlBody . "\r\n";
+            foreach ($attachments as $att) {
+                $rawContent = (string)($att['content'] ?? '');
+                $name = (string)($att['name'] ?? 'attachment.txt');
+                $isBase64 = !empty($att['is_base64']);
+                $b64Content = $isBase64 ? $rawContent : base64_encode($rawContent);
+                $type = (string)($att['type'] ?? 'application/octet-stream');
+                $mailBody .= "--$boundary\r\n"
+                    . "Content-Type: {$type}; name=\"" . self::encodeHeader($name) . "\"\r\n"
+                    . "Content-Disposition: attachment; filename=\"" . self::encodeHeader($name) . "\"\r\n"
+                    . "Content-Transfer-Encoding: base64\r\n\r\n"
+                    . chunk_split($b64Content);
+            }
+            $mailBody .= "--$boundary--";
+        }
+
+        $ok = @mail(implode(', ', $recipients), $subject, $mailBody, implode("\r\n", $headers));
         if (!$ok) {
             return ['ok' => false, 'error' => 'PHP mail() returned false (often disabled on free shared hosting).'];
         }
@@ -103,15 +129,32 @@ class Mailer
         array $recipients,
         string $subject,
         string $htmlBody,
-        string $textBody
+        string $textBody,
+        array $attachments = []
     ): array {
-        $payload = json_encode([
+        $bodyData = [
             'sender' => ['name' => $senderName, 'email' => $senderEmail],
             'to' => array_map(static fn(string $email) => ['email' => $email], $recipients),
             'subject' => $subject,
             'htmlContent' => $htmlBody,
             'textContent' => $textBody,
-        ]);
+        ];
+
+        if (!empty($attachments)) {
+            $brevoAttachments = [];
+            foreach ($attachments as $att) {
+                $rawContent = (string)($att['content'] ?? '');
+                $name = (string)($att['name'] ?? 'attachment.txt');
+                $isBase64 = !empty($att['is_base64']);
+                $brevoAttachments[] = [
+                    'name' => $name,
+                    'content' => $isBase64 ? $rawContent : base64_encode($rawContent),
+                ];
+            }
+            $bodyData['attachment'] = $brevoAttachments;
+        }
+
+        $payload = json_encode($bodyData);
 
         return self::curlJsonPost(
             'https://api.brevo.com/v3/smtp/email',
@@ -131,15 +174,32 @@ class Mailer
         array $recipients,
         string $subject,
         string $htmlBody,
-        string $textBody
+        string $textBody,
+        array $attachments = []
     ): array {
-        $payload = json_encode([
+        $bodyData = [
             'from' => sprintf('%s <%s>', $senderName, $senderEmail),
             'to' => array_values($recipients),
             'subject' => $subject,
             'html' => $htmlBody,
             'text' => $textBody,
-        ]);
+        ];
+
+        if (!empty($attachments)) {
+            $resendAttachments = [];
+            foreach ($attachments as $att) {
+                $rawContent = (string)($att['content'] ?? '');
+                $name = (string)($att['name'] ?? 'attachment.txt');
+                $isBase64 = !empty($att['is_base64']);
+                $resendAttachments[] = [
+                    'filename' => $name,
+                    'content' => $isBase64 ? $rawContent : base64_encode($rawContent),
+                ];
+            }
+            $bodyData['attachments'] = $resendAttachments;
+        }
+
+        $payload = json_encode($bodyData);
 
         return self::curlJsonPost(
             'https://api.resend.com/emails',
@@ -192,7 +252,8 @@ class Mailer
         array $recipients,
         string $subject,
         string $htmlBody,
-        string $textBody
+        string $textBody,
+        array $attachments = []
     ): array {
         if ($host === '' || $port <= 0) {
             return ['ok' => false, 'error' => 'SMTP host and port are required.'];
@@ -240,27 +301,74 @@ class Mailer
             self::sendSmtpLine($socket, 'DATA');
             self::expectSmtpCode($socket, [354]);
 
-            $boundary = 'plm_' . bin2hex(random_bytes(8));
             $toHeader = implode(', ', array_map(static fn(string $e) => '<' . $e . '>', $recipients));
-            $headers = [
-                'Date: ' . date('r'),
-                sprintf('From: %s <%s>', self::encodeHeader($senderName), $senderEmail),
-                'To: ' . $toHeader,
-                'Subject: ' . self::encodeHeader($subject),
-                'MIME-Version: 1.0',
-                'Content-Type: multipart/alternative; boundary="' . $boundary . '"',
-            ];
 
-            $body = implode("\r\n", $headers) . "\r\n\r\n"
-                . "--$boundary\r\n"
-                . "Content-Type: text/plain; charset=UTF-8\r\n"
-                . "Content-Transfer-Encoding: base64\r\n\r\n"
-                . chunk_split(base64_encode($textBody)) . "\r\n"
-                . "--$boundary\r\n"
-                . "Content-Type: text/html; charset=UTF-8\r\n"
-                . "Content-Transfer-Encoding: base64\r\n\r\n"
-                . chunk_split(base64_encode($htmlBody)) . "\r\n"
-                . "--$boundary--\r\n.";
+            if (empty($attachments)) {
+                $boundary = 'plm_' . bin2hex(random_bytes(8));
+                $headers = [
+                    'Date: ' . date('r'),
+                    sprintf('From: %s <%s>', self::encodeHeader($senderName), $senderEmail),
+                    'To: ' . $toHeader,
+                    'Subject: ' . self::encodeHeader($subject),
+                    'MIME-Version: 1.0',
+                    'Content-Type: multipart/alternative; boundary="' . $boundary . '"',
+                ];
+
+                $body = implode("\r\n", $headers) . "\r\n\r\n"
+                    . "--$boundary\r\n"
+                    . "Content-Type: text/plain; charset=UTF-8\r\n"
+                    . "Content-Transfer-Encoding: base64\r\n\r\n"
+                    . chunk_split(base64_encode($textBody)) . "\r\n"
+                    . "--$boundary\r\n"
+                    . "Content-Type: text/html; charset=UTF-8\r\n"
+                    . "Content-Transfer-Encoding: base64\r\n\r\n"
+                    . chunk_split(base64_encode($htmlBody)) . "\r\n"
+                    . "--$boundary--\r\n.";
+            } else {
+                $mixedBoundary = 'plm_mix_' . bin2hex(random_bytes(8));
+                $altBoundary = 'plm_alt_' . bin2hex(random_bytes(8));
+                $headers = [
+                    'Date: ' . date('r'),
+                    sprintf('From: %s <%s>', self::encodeHeader($senderName), $senderEmail),
+                    'To: ' . $toHeader,
+                    'Subject: ' . self::encodeHeader($subject),
+                    'MIME-Version: 1.0',
+                    'Content-Type: multipart/mixed; boundary="' . $mixedBoundary . '"',
+                ];
+
+                $parts = [];
+                // Alternative content (plain text + html)
+                $parts[] = "--$mixedBoundary\r\n"
+                    . "Content-Type: multipart/alternative; boundary=\"$altBoundary\"\r\n\r\n"
+                    . "--$altBoundary\r\n"
+                    . "Content-Type: text/plain; charset=UTF-8\r\n"
+                    . "Content-Transfer-Encoding: base64\r\n\r\n"
+                    . chunk_split(base64_encode($textBody)) . "\r\n"
+                    . "--$altBoundary\r\n"
+                    . "Content-Type: text/html; charset=UTF-8\r\n"
+                    . "Content-Transfer-Encoding: base64\r\n\r\n"
+                    . chunk_split(base64_encode($htmlBody)) . "\r\n"
+                    . "--$altBoundary--";
+
+                // Attachment parts
+                foreach ($attachments as $att) {
+                    $rawContent = (string)($att['content'] ?? '');
+                    $name = (string)($att['name'] ?? 'attachment.txt');
+                    $isBase64 = !empty($att['is_base64']);
+                    $b64Content = $isBase64 ? $rawContent : base64_encode($rawContent);
+                    $type = (string)($att['type'] ?? 'application/octet-stream');
+
+                    $parts[] = "--$mixedBoundary\r\n"
+                        . "Content-Type: {$type}; name=\"" . self::encodeHeader($name) . "\"\r\n"
+                        . "Content-Disposition: attachment; filename=\"" . self::encodeHeader($name) . "\"\r\n"
+                        . "Content-Transfer-Encoding: base64\r\n\r\n"
+                        . chunk_split($b64Content);
+                }
+
+                $body = implode("\r\n", $headers) . "\r\n\r\n"
+                    . implode("\r\n", $parts) . "\r\n"
+                    . "--$mixedBoundary--\r\n.";
+            }
 
             fwrite($socket, $body . "\r\n");
             self::expectSmtpCode($socket, [250]);

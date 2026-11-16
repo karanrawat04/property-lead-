@@ -1,0 +1,90 @@
+name: Deploy to InfinityFree
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build, Deploy & Migrate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, pdo, pdo_mysql, curl, openssl
+
+      - name: 3. Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: 'frontend/package-lock.json'
+
+      - name: 4. Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: 5. Run Backend Unit Tests
+        run: |
+          php backend/tests/run_tests.php
+
+      - name: 6. Build InfinityFree Distribution Bundle
+        run: |
+          bash ./build_infinityfree.sh
+
+      - name: 7. Deploy to InfinityFree via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftp
+          port: 21
+          local-dir: ./deploy-htdocs/
+          server-dir: ./htdocs/
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/**
+            config/config.local.php
+            uploads/**
+            backups/**
+
+      - name: 8. Trigger Safe Database Migration (Emailed Backup First)
+        run: |
+          DOMAIN="${{ secrets.APP_DOMAIN }}"
+          # Trim trailing slash if provided
+          DOMAIN="${DOMAIN%/}"
+          
+          echo "=========================================================="
+          echo "Triggering automated migration and email backup..."
+          echo "Target Domain: $DOMAIN"
+          echo "=========================================================="
+          
+          # Call webhook endpoint
+          RESPONSE=$(curl -s -S -w "\nHTTP_STATUS_CODE:%{http_code}" -X POST "${DOMAIN}/api/system/migrate?secret=${{ secrets.DEPLOY_SECRET }}")
+          
+          HTTP_CODE=$(echo "$RESPONSE" | grep "HTTP_STATUS_CODE:" | cut -d':' -f2)
+          BODY=$(echo "$RESPONSE" | grep -v "HTTP_STATUS_CODE:")
+          
+          echo "Response Body:"
+          echo "$BODY"
+          echo "HTTP Status Code: $HTTP_CODE"
+          
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Migration failed or pre-migration backup email could not be delivered! Deployment aborted."
+            exit 1
+          fi
+          
+          echo "Migration and pre-migration backup succeeded!"
+

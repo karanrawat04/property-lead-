@@ -11,6 +11,7 @@ require_once __DIR__ . '/../lib/Validator.php';
 require_once __DIR__ . '/../lib/Auth.php';
 require_once __DIR__ . '/../lib/Mailer.php';
 require_once __DIR__ . '/../lib/ReminderService.php';
+require_once __DIR__ . '/../lib/BackupService.php';
 
 Response::sendHeaders($config['cors_origin'] ?? '*');
 
@@ -197,6 +198,139 @@ try {
 
         $result = ReminderService::processDueReminders($pdo, $appSecret, false);
         Response::success($result, $result['message']);
+    }
+
+    // -------------------------------------------------------------------------
+    // SYSTEM / DEPLOYMENT AUTOMATION ROUTES (Guarded by Secret Key)
+    // -------------------------------------------------------------------------
+    if ($route === '/system/migrate' && ($method === 'GET' || $method === 'POST')) {
+        $providedSecret = (string)($_GET['secret'] ?? $_POST['secret'] ?? $_SERVER['HTTP_X_DEPLOY_SECRET'] ?? '');
+        $settings = ReminderService::ensureSettingsRow($pdo);
+        $cronSecret = (string)($settings['cron_secret'] ?? '');
+
+        $isCronSecretValid = ($cronSecret !== '' && $providedSecret !== '' && hash_equals($cronSecret, $providedSecret));
+        $isAppSecretValid = ($appSecret !== '' && $providedSecret !== '' && hash_equals($appSecret, $providedSecret));
+
+        if (!$isCronSecretValid && !$isAppSecretValid) {
+            Response::error('Unauthorized: Invalid or missing deployment secret.', 403);
+        }
+
+        // 1. Determine recipient email address
+        $recipientEmail = trim((string)($settings['recipient_email'] ?? ''));
+        if ($recipientEmail === '') {
+            $adminStmt = $pdo->query("SELECT email FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1");
+            $adminUser = $adminStmt ? $adminStmt->fetch() : null;
+            $recipientEmail = trim((string)($adminUser['email'] ?? ''));
+        }
+
+        if ($recipientEmail === '' || !filter_var($recipientEmail, FILTER_VALIDATE_EMAIL)) {
+            Response::error('Migration aborted for data safety: No valid recipient email address found in Email Settings or Admin account to receive the pre-migration backup.', 500);
+        }
+
+        // 2. Generate complete self-contained SQL dump with all tables and data
+        $timestamp = date('Ymd_His');
+        $displayTime = date('d/m/Y H:i:s');
+        $filename = "backup_property_lead_manager_{$timestamp}.sql";
+        $sqlDump = BackupService::generateSqlDump($pdo);
+        $dumpSizeBytes = strlen($sqlDump);
+        $dumpSizeKb = round($dumpSizeBytes / 1024, 2);
+
+        // 3. Compose pre-migration backup notification with attached dump
+        $subject = "Property Lead Manager: Pre-Migration Database Backup ({$displayTime} IST)";
+        $htmlBody = '
+            <div style="font-family: Arial, -apple-system, BlinkMacSystemFont, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px; background-color: #ffffff;">
+                <h2 style="color: #4338ca; margin-top: 0; font-size: 20px;">Automated Pre-Migration Database Backup</h2>
+                <p style="color: #334155; font-size: 14px; line-height: 1.5;">A deployment / database migration was triggered. Before making any schema modifications, this complete self-contained SQL backup containing all current tables and leads was generated and attached below.</p>
+                <div style="background-color: #f8fafc; border-left: 4px solid #4338ca; padding: 14px 18px; margin: 20px 0; border-radius: 4px;">
+                    <p style="margin: 4px 0; font-size: 13px; color: #1e293b;"><b>Generated At:</b> ' . htmlspecialchars($displayTime) . ' (Asia/Kolkata)</p>
+                    <p style="margin: 4px 0; font-size: 13px; color: #1e293b;"><b>Backup Filename:</b> ' . htmlspecialchars($filename) . '</p>
+                    <p style="margin: 4px 0; font-size: 13px; color: #1e293b;"><b>File Size:</b> ' . htmlspecialchars((string)$dumpSizeKb) . ' KB (' . number_format($dumpSizeBytes) . ' bytes)</p>
+                </div>
+                <div style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 6px; padding: 12px; margin-bottom: 20px;">
+                    <p style="margin: 0; color: #166534; font-size: 13px; font-weight: 600;">&#10003; Data Safety Protocol Active: Your full database is preserved in this email attachment.</p>
+                </div>
+                <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">Sent automatically by the Property Lead Manager CI/CD deployment pipeline.</p>
+            </div>';
+
+        $textBody = "Automated Pre-Migration Database Backup\n\n"
+            . "Generated At: {$displayTime} (Asia/Kolkata)\n"
+            . "Backup Filename: {$filename}\n"
+            . "Dump Size: {$dumpSizeKb} KB ({$dumpSizeBytes} bytes)\n\n"
+            . "Your pre-migration SQL backup is attached. Database schema updates will now proceed safely.";
+
+        $attachments = [
+            [
+                'name' => $filename,
+                'content' => $sqlDump,
+                'type' => 'application/sql',
+            ]
+        ];
+
+        // 4. Send email - FAIL-SAFE ABORT if email delivery fails
+        $mailResult = Mailer::send(
+            $settings,
+            $recipientEmail,
+            $subject,
+            $htmlBody,
+            $textBody,
+            $appSecret,
+            $attachments
+        );
+
+        if (!$mailResult['ok']) {
+            Response::error(
+                "CRITICAL: Migration ABORTED to protect your data! Pre-migration backup email could not be delivered to {$recipientEmail}: " . $mailResult['error'],
+                500
+            );
+        }
+
+        // 5. Email confirmed delivered -> Run database schema migrations safely
+        Database::migrateIfNeeded($pdo);
+
+        Response::success([
+            'status' => 'migrated',
+            'backup_emailed_to' => $recipientEmail,
+            'backup_filename' => $filename,
+            'backup_size_kb' => $dumpSizeKb,
+            'timestamp' => $displayTime,
+        ], 'Pre-migration database backup was successfully emailed and schema migrations executed safely.');
+    }
+
+    if ($route === '/system/backup/download' && $method === 'GET') {
+        $providedSecret = (string)($_GET['secret'] ?? $_SERVER['HTTP_X_DEPLOY_SECRET'] ?? '');
+        $settings = ReminderService::ensureSettingsRow($pdo);
+        $cronSecret = (string)($settings['cron_secret'] ?? '');
+
+        $isCronSecretValid = ($cronSecret !== '' && $providedSecret !== '' && hash_equals($cronSecret, $providedSecret));
+        $isAppSecretValid = ($appSecret !== '' && $providedSecret !== '' && hash_equals($appSecret, $providedSecret));
+
+        $isAdmin = false;
+        $authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+        if (preg_match('/Bearer\s+(\S+)/', $authHeader, $matches)) {
+            $token = $matches[1];
+            $tokenHash = hash('sha256', $token);
+            $userStmt = $pdo->prepare('SELECT u.role FROM personal_access_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ? AND t.revoked_at IS NULL');
+            $userStmt->execute([$tokenHash]);
+            $userRow = $userStmt->fetch();
+            if ($userRow && $userRow['role'] === 'admin') {
+                $isAdmin = true;
+            }
+        }
+
+        if (!$isCronSecretValid && !$isAppSecretValid && !$isAdmin) {
+            Response::error('Unauthorized: Invalid secret or insufficient permissions.', 403);
+        }
+
+        $timestamp = date('Ymd_His');
+        $filename = "backup_property_lead_manager_{$timestamp}.sql";
+        $sqlDump = BackupService::generateSqlDump($pdo);
+
+        header('Content-Type: application/sql; charset=utf-8');
+        header('Content-Disposition: attachment; filename="' . $filename . '"');
+        header('Content-Length: ' . strlen($sqlDump));
+        header('Cache-Control: no-cache, no-store, must-revalidate');
+        echo $sqlDump;
+        exit;
     }
 
     // -------------------------------------------------------------------------
