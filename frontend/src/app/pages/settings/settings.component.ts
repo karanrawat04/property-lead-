@@ -6,7 +6,7 @@ import { ApiService } from '../../core/api.service';
 import { AuthService } from '../../core/auth.service';
 import { extractApiError } from '../../core/api-error';
 import { EmailSettings, ReminderLog } from '../../core/models';
-import { formatIstDateTime, parseEmailList } from '../../core/validators';
+import { formatIstDateTime, handleNumericKeydown, parseEmailList } from '../../core/validators';
 
 @Component({
   selector: 'app-settings',
@@ -92,7 +92,11 @@ import { formatIstDateTime, parseEmailList } from '../../core/validators';
 
               <div class="form-group">
                 <label>Remind Before (minutes)</label>
-                <input type="number" [formField]="emailForm.remind_before_minutes" />
+                <input
+                  type="number"
+                  [formField]="emailForm.remind_before_minutes"
+                  (keydown)="onNumberKey($event)"
+                />
                 <span class="field-hint">e.g. 60 = send reminder up to 60 mins before scheduled time.</span>
                 @if (emailForm.remind_before_minutes().touched() && emailForm.remind_before_minutes().errors().length) {
                   <span class="field-error">{{ emailForm.remind_before_minutes().errors()[0].message }}</span>
@@ -156,7 +160,12 @@ import { formatIstDateTime, parseEmailList } from '../../core/validators';
                 </div>
                 <div class="form-group">
                   <label>SMTP Port</label>
-                  <input type="number" [formField]="emailForm.smtp_port" placeholder="587" />
+                  <input
+                    type="number"
+                    [formField]="emailForm.smtp_port"
+                    placeholder="587"
+                    (keydown)="onNumberKey($event)"
+                  />
                 </div>
                 <div class="form-group">
                   <label>Encryption</label>
@@ -408,6 +417,10 @@ export class SettingsComponent implements OnInit {
     const origin = typeof window !== 'undefined' ? window.location.origin : '';
     return `${origin}/api/reminders/cron?key=${secret}`;
   });
+
+  onNumberKey(event: KeyboardEvent): void {
+    handleNumericKeydown(event, false);
+  }
 
   ngOnInit(): void {
     this.loadSettings();

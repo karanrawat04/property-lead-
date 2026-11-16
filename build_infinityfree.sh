@@ -23,13 +23,23 @@ if [[ -f "$OUT_DIR/config/config.local.php" ]]; then
   cp "$OUT_DIR/config/config.local.php" "$LOCAL_CFG_BACKUP"
 fi
 
+UPLOADS_BACKUP=""
+if [[ -d "$OUT_DIR/uploads" ]]; then
+  UPLOADS_BACKUP="$(mktemp -d)"
+  cp -r "$OUT_DIR/uploads"/* "$UPLOADS_BACKUP/" 2>/dev/null || true
+fi
+
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
 cp -r "$DIST_DIR"/* "$OUT_DIR/"
 cp "$ROOT_DIR/backend/htdocs.htaccess" "$OUT_DIR/.htaccess"
 
-mkdir -p "$OUT_DIR/api" "$OUT_DIR/config" "$OUT_DIR/lib" "$OUT_DIR/database"
+mkdir -p "$OUT_DIR/api" "$OUT_DIR/config" "$OUT_DIR/lib" "$OUT_DIR/database" "$OUT_DIR/uploads/avatars"
+if [[ -n "$UPLOADS_BACKUP" && -d "$UPLOADS_BACKUP" ]]; then
+  cp -r "$UPLOADS_BACKUP"/* "$OUT_DIR/uploads/" 2>/dev/null || true
+  rm -rf "$UPLOADS_BACKUP"
+fi
 cp "$ROOT_DIR/backend/api/index.php" "$OUT_DIR/api/index.php"
 cp "$ROOT_DIR/backend/api/.htaccess" "$OUT_DIR/api/.htaccess"
 cp "$ROOT_DIR/backend/config/config.php" "$OUT_DIR/config/config.php"

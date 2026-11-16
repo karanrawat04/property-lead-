@@ -10,7 +10,27 @@ export interface User {
   name: string;
   email: string;
   role: 'admin' | 'agent';
+  mobile_number?: string | null;
+  alt_number?: string | null;
+  address?: string | null;
+  date_of_joining?: string | null;
+  avatar_url?: string | null;
+  is_active?: number | boolean;
   timezone?: string;
+  assigned_leads_count?: number;
+  hot_leads_count?: number;
+  visited_leads_count?: number;
+  won_leads_count?: number;
+  overdue_count?: number;
+  created_at?: string;
+}
+
+export interface AgentDropdownItem {
+  id: number;
+  name: string;
+  email: string;
+  avatar_url: string | null;
+  mobile_number: string | null;
 }
 
 export interface HealthStatus {
@@ -19,17 +39,6 @@ export interface HealthStatus {
   timezone: string;
   server_time: string;
   php_version: string;
-}
-
-export interface TagItem {
-  id: number;
-  name: string;
-  description: string | null;
-  color: string;
-  is_active: number | boolean;
-  inventory_count?: number;
-  created_at?: string;
-  updated_at?: string;
 }
 
 export interface InventoryItem {
@@ -42,10 +51,6 @@ export interface InventoryItem {
   floor_wing: string | null;
   area_sqft: number | null;
   price: number | null;
-  tag_id: number | null;
-  tag_name?: string | null;
-  tag_description?: string | null;
-  tag_color?: string | null;
   notes: string | null;
   created_at?: string;
   updated_at?: string;
@@ -58,6 +63,8 @@ export type LeadStatus =
   | 'Negotiation'
   | 'Closed Won'
   | 'Closed Lost';
+
+export type LeadTemperature = 'Hot' | 'Warm' | 'Cold';
 
 export interface LeadFollowup {
   id: number;
@@ -83,16 +90,19 @@ export interface Lead {
   preferred_location: string | null;
   property_requirement: string | null;
   interested_inventory_id: number | null;
+  assigned_agent_id?: number | null;
+  assigned_agent_name?: string | null;
+  assigned_agent_avatar?: string | null;
+  assigned_agent_mobile?: string | null;
   inv_unique_code?: string | null;
   inv_unit_number?: string | null;
   inv_title?: string | null;
-  inv_tag_name?: string | null;
-  inv_tag_color?: string | null;
   is_visited: number | boolean;
   visited_at: string | null;
   needs_followup: number | boolean;
   next_followup_at: string | null;
   status: LeadStatus;
+  temperature: LeadTemperature;
   notes: string | null;
   followup_count?: number;
   last_followup_at?: string | null;
@@ -129,5 +139,53 @@ export interface ReminderLog {
   status: 'sent' | 'failed';
   error_message: string | null;
   sent_at: string;
+}
+
+export interface AgentPerformanceItem {
+  id: number;
+  name: string;
+  email: string;
+  mobile_number: string | null;
+  avatar_url: string | null;
+  is_active: number | boolean;
+  total_assigned: number;
+  hot_count: number;
+  visited_count: number;
+  won_count: number;
+  overdue_count: number;
+}
+
+export interface UrgentLeadItem {
+  id: number;
+  full_name: string;
+  phone: string;
+  email: string | null;
+  status: LeadStatus;
+  temperature: LeadTemperature;
+  needs_followup: number | boolean;
+  next_followup_at: string | null;
+  is_visited: number | boolean;
+  inv_unit_number?: string | null;
+  inv_title?: string | null;
+  assigned_agent_name?: string | null;
+  assigned_agent_avatar?: string | null;
+}
+
+export interface DashboardStats {
+  role: 'admin' | 'agent';
+  total_leads: number;
+  hot_leads: number;
+  warm_leads: number;
+  cold_leads: number;
+  visited_leads: number;
+  closed_won_leads: number;
+  closed_lost_leads: number;
+  conversion_rate: number;
+  overdue_followups: number;
+  today_followups: number;
+  upcoming_followups: number;
+  status_breakdown: Record<string, number>;
+  urgent_leads: UrgentLeadItem[];
+  agents_performance: AgentPerformanceItem[];
 }
 

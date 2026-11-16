@@ -88,6 +88,28 @@ class Validator
         return null;
     }
 
+    public static function normalizeDate($value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+        $str = trim((string)$value);
+        if ($str === '') {
+            return null;
+        }
+        $tz = new DateTimeZone('Asia/Kolkata');
+        foreach (['Y-m-d', 'd/m/Y', 'd-m-Y'] as $fmt) {
+            $dt = DateTimeImmutable::createFromFormat('!' . $fmt, $str, $tz);
+            if ($dt !== false) {
+                $errors = DateTimeImmutable::getLastErrors();
+                if ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0)) {
+                    return $dt->format('Y-m-d');
+                }
+            }
+        }
+        return null;
+    }
+
     public static function isValidDateTimeInput($value): bool
     {
         if ($value === null || trim((string)$value) === '') {
@@ -150,6 +172,12 @@ class Validator
             $errors['status'] = 'Invalid lead status.';
         }
 
+        $allowedTemperatures = ['Hot', 'Warm', 'Cold'];
+        $temperature = trim((string)($input['temperature'] ?? 'Warm'));
+        if (!in_array($temperature, $allowedTemperatures, true)) {
+            $temperature = 'Warm';
+        }
+
         if (!self::isValidDateTimeInput($input['visited_at'] ?? null)) {
             $errors['visited_at'] = 'Invalid visited date/time format.';
         }
@@ -177,6 +205,11 @@ class Validator
             ? (int)$invId
             : null;
 
+        $agentIdRaw = $input['assigned_agent_id'] ?? null;
+        $assignedAgentId = ($agentIdRaw !== null && $agentIdRaw !== '' && is_numeric($agentIdRaw) && (int)$agentIdRaw > 0)
+            ? (int)$agentIdRaw
+            : null;
+
         return [
             'errors' => $errors,
             'data' => [
@@ -189,12 +222,70 @@ class Validator
                 'preferred_location' => self::normalizeNullableString($input['preferred_location'] ?? null),
                 'property_requirement' => self::normalizeNullableString($input['property_requirement'] ?? null),
                 'interested_inventory_id' => $inventoryId,
+                'assigned_agent_id' => $assignedAgentId,
                 'is_visited' => $isVisited,
                 'visited_at' => $visitedAt,
                 'needs_followup' => $needsFollowup,
                 'next_followup_at' => $nextFollowupAt,
                 'status' => $status,
+                'temperature' => $temperature,
                 'notes' => self::normalizeNullableString($input['notes'] ?? null),
+            ],
+        ];
+    }
+
+    public static function validateAgent(array $input, bool $isNew = true): array
+    {
+        $errors = [];
+
+        $name = trim((string)($input['name'] ?? ''));
+        if ($name === '' || self::strLen($name) < 2) {
+            $errors['name'] = 'Full name is required (minimum 2 characters).';
+        } elseif (self::strLen($name) > 100) {
+            $errors['name'] = 'Full name cannot exceed 100 characters.';
+        }
+
+        $email = strtolower(trim((string)($input['email'] ?? '')));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors['email'] = 'A valid email address is required.';
+        }
+
+        $password = (string)($input['password'] ?? '');
+        if ($isNew && strlen($password) < 6) {
+            $errors['password'] = 'Password is required and must be at least 6 characters.';
+        } elseif (!$isNew && $password !== '' && strlen($password) < 6) {
+            $errors['password'] = 'New password must be at least 6 characters.';
+        }
+
+        $mobile = self::normalizeNullableString($input['mobile_number'] ?? null);
+        if ($mobile !== null && !preg_match('/^[0-9+\-\s()]{7,20}$/', $mobile)) {
+            $errors['mobile_number'] = 'Enter a valid mobile number (7 to 20 digits).';
+        }
+
+        $altMobile = self::normalizeNullableString($input['alt_number'] ?? null);
+        if ($altMobile !== null && !preg_match('/^[0-9+\-\s()]{7,20}$/', $altMobile)) {
+            $errors['alt_number'] = 'Enter a valid alternate number (7 to 20 digits).';
+        }
+
+        $dateOfJoining = self::normalizeDate($input['date_of_joining'] ?? null);
+        if (!empty($input['date_of_joining']) && $dateOfJoining === null) {
+            $errors['date_of_joining'] = 'Invalid date of joining (use DD/MM/YYYY or YYYY-MM-DD).';
+        }
+
+        $isActive = isset($input['is_active']) ? (!empty($input['is_active']) ? 1 : 0) : 1;
+
+        return [
+            'errors' => $errors,
+            'data' => [
+                'name' => $name,
+                'email' => $email,
+                'password' => $password,
+                'mobile_number' => $mobile,
+                'alt_number' => $altMobile,
+                'address' => self::normalizeNullableString($input['address'] ?? null),
+                'date_of_joining' => $dateOfJoining,
+                'avatar_url' => self::normalizeNullableString($input['avatar_url'] ?? null),
+                'is_active' => $isActive,
             ],
         ];
     }
@@ -251,11 +342,6 @@ class Validator
             }
         }
 
-        $tagIdRaw = $input['tag_id'] ?? null;
-        $tagId = ($tagIdRaw !== null && $tagIdRaw !== '' && is_numeric($tagIdRaw) && (int)$tagIdRaw > 0)
-            ? (int)$tagIdRaw
-            : null;
-
         return [
             'errors' => $errors,
             'data' => [
@@ -267,35 +353,7 @@ class Validator
                 'floor_wing' => self::normalizeNullableString($input['floor_wing'] ?? null),
                 'area_sqft' => $areaSqft,
                 'price' => $price,
-                'tag_id' => $tagId,
                 'notes' => self::normalizeNullableString($input['notes'] ?? null),
-            ],
-        ];
-    }
-
-    public static function validateTag(array $input): array
-    {
-        $errors = [];
-
-        $name = trim((string)($input['name'] ?? ''));
-        if ($name === '' || self::strLen($name) < 2) {
-            $errors['name'] = 'Tag name is required (minimum 2 characters).';
-        } elseif (self::strLen($name) > 60) {
-            $errors['name'] = 'Tag name cannot exceed 60 characters.';
-        }
-
-        $color = trim((string)($input['color'] ?? '#2563eb'));
-        if (!preg_match('/^#[0-9A-Fa-f]{6}$/', $color)) {
-            $errors['color'] = 'Color must be a valid 6-digit hex code (e.g. #16a34a).';
-        }
-
-        return [
-            'errors' => $errors,
-            'data' => [
-                'name' => $name,
-                'description' => self::normalizeNullableString($input['description'] ?? null),
-                'color' => $color,
-                'is_active' => array_key_exists('is_active', $input) ? (!empty($input['is_active']) ? 1 : 0) : 1,
             ],
         ];
     }

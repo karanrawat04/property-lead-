@@ -1,9 +1,10 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
-import { form, FormField, required, submit, validate } from '@angular/forms/signals';
+import { CommonModule } from '@angular/common';
+import { form, FormField, required, maxLength, submit, validate } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/api.service';
 import { extractApiError } from '../../core/api-error';
-import { Lead, LeadStatus } from '../../core/models';
+import { Lead, LeadStatus, LeadTemperature } from '../../core/models';
 import { IstDatetimeField } from '../../shared/ist-datetime-field/ist-datetime-field';
 import { LeadSourceBadge } from '../../shared/lead-source/lead-source-badge';
 import {
@@ -15,7 +16,7 @@ import {
 
 @Component({
   selector: 'app-followups',
-  imports: [FormField, IstDatetimeField, LeadSourceBadge],
+  imports: [CommonModule, FormField, IstDatetimeField, LeadSourceBadge],
   template: `
     <div class="page-header">
       <div>
@@ -53,7 +54,9 @@ import {
             <thead>
               <tr>
                 <th>Next Follow-up (IST)</th>
-                <th>Lead</th>
+                <th>Temp</th>
+                <th>Lead Contact</th>
+                <th>Assigned Agent</th>
                 <th>Budget & Unit</th>
                 <th>Visited</th>
                 <th>Last Note</th>
@@ -70,12 +73,31 @@ import {
                     <div style="margin-top:4px; font-weight:700;">{{ formatDt(lead.next_followup_at) }}</div>
                   </td>
                   <td>
+                    <span class="temp-badge" [ngClass]="getTempClass(lead.temperature)">
+                      {{ getTempIcon(lead.temperature) }} {{ lead.temperature }}
+                    </span>
+                  </td>
+                  <td>
                     <div style="font-weight:700;">{{ lead.full_name }}</div>
-                    <div><a class="phone-link" [href]="'tel:' + lead.phone">{{ lead.phone }}</a></div>
+                    <div style="display:flex; align-items:center; gap:6px; margin: 3px 0;">
+                      <a class="phone-link" [href]="'tel:' + lead.phone">📞 {{ lead.phone }}</a>
+                      <a
+                        [href]="getWhatsAppUrl(lead.phone, lead.full_name)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="btn-mini btn-whatsapp"
+                        title="Chat on WhatsApp"
+                      >💬</a>
+                    </div>
                     <div class="page-subtitle">Status: {{ lead.status }}</div>
                     @if (lead.source) {
                       <div style="margin-top: 4px;"><app-lead-source-badge [source]="lead.source" /></div>
                     }
+                  </td>
+                  <td>
+                    <span class="agent-tag">
+                      👤 {{ lead.assigned_agent_name || 'Unassigned' }}
+                    </span>
                   </td>
                   <td>
                     <div>{{ formatBudget(lead.budget_min, lead.budget_max) }}</div>
@@ -116,14 +138,22 @@ import {
               <div class="mobile-card-head">
                 <div>
                   <div style="font-weight: 700; font-size: 15.5px;">{{ lead.full_name }}</div>
-                  <a class="phone-link" [href]="'tel:' + lead.phone">{{ lead.phone }}</a>
+                  <div style="display:flex; align-items:center; gap:6px; margin: 3px 0;">
+                    <a class="phone-link" [href]="'tel:' + lead.phone">📞 {{ lead.phone }}</a>
+                    <a [href]="getWhatsAppUrl(lead.phone, lead.full_name)" target="_blank" rel="noopener noreferrer" class="btn-mini btn-whatsapp">💬</a>
+                  </div>
                   @if (lead.source) {
                     <div style="margin-top: 4px;"><app-lead-source-badge [source]="lead.source" /></div>
                   }
                 </div>
-                <span class="badge" [class.badge-red]="isOverdue(lead)" [class.badge-amber]="!isOverdue(lead)">
-                  {{ isOverdue(lead) ? 'Overdue' : 'Scheduled' }}
-                </span>
+                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+                  <span class="badge" [class.badge-red]="isOverdue(lead)" [class.badge-amber]="!isOverdue(lead)">
+                    {{ isOverdue(lead) ? 'Overdue' : 'Scheduled' }}
+                  </span>
+                  <span class="temp-badge" [ngClass]="getTempClass(lead.temperature)">
+                    {{ getTempIcon(lead.temperature) }} {{ lead.temperature }}
+                  </span>
+                </div>
               </div>
 
               <div class="mobile-card-meta">
@@ -132,14 +162,18 @@ import {
                   <strong>{{ formatDt(lead.next_followup_at) }}</strong>
                 </div>
                 <div>
+                  <span class="mobile-meta-label">Assigned Agent</span>
+                  <span>{{ lead.assigned_agent_name || 'Unassigned' }}</span>
+                </div>
+                <div>
                   <span class="mobile-meta-label">Budget</span>
                   <span>{{ formatBudget(lead.budget_min, lead.budget_max) }}</span>
                 </div>
                 @if (lead.inv_unit_number) {
-                  <div style="grid-column: 1 / -1;">
+                  <div>
                     <span class="mobile-meta-label">Unit</span>
                     <span class="mono-code">{{ lead.inv_unique_code }}</span>
-                    <span style="margin-left: 6px;">{{ lead.inv_unit_number }}</span>
+                    <span style="margin-left: 4px;">{{ lead.inv_unit_number }}</span>
                   </div>
                 }
                 @if (lead.last_followup_notes || lead.notes) {
@@ -151,6 +185,8 @@ import {
               </div>
 
               <div class="mobile-card-actions">
+                <a [href]="'tel:' + lead.phone" class="btn btn-secondary btn-sm" style="flex:1; text-align:center;">📞 Call</a>
+                <a [href]="getWhatsAppUrl(lead.phone, lead.full_name)" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-whatsapp" style="flex:1; text-align:center;">💬 WhatsApp</a>
                 <button
                   class="btn btn-sm"
                   [class.btn-success]="lead.is_visited"
@@ -198,6 +234,9 @@ import {
                 <div class="form-group">
                   <label>Outcome</label>
                   <input type="text" [formField]="followupForm.outcome" placeholder="e.g. Site visit confirmed" />
+                  @if (followupForm.outcome().touched() && followupForm.outcome().errors().length) {
+                    <span class="field-error">{{ followupForm.outcome().errors()[0].message }}</span>
+                  }
                 </div>
                 <div class="form-group">
                   <label>Lead Status</label>
@@ -242,6 +281,46 @@ import {
           </form>
         </div>
       </div>
+    }
+  `,
+  styles: `
+    .temp-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .temp-hot { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .temp-warm { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .temp-cold { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .btn-mini {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .btn-whatsapp {
+      background: #dcfce7;
+      color: #15803d;
+      border: 1px solid #bbf7d0;
+    }
+    .btn-whatsapp:hover { background: #bbf7d0; }
+    .agent-tag {
+      font-size: 12px;
+      background: #f1f5f9;
+      color: #334155;
+      padding: 3px 7px;
+      border-radius: 4px;
+      font-weight: 600;
     }
   `,
 })
@@ -296,7 +375,9 @@ export class FollowupsComponent implements OnInit {
       return undefined;
     });
     required(s.channel, { message: 'Channel is required.' });
+    maxLength(s.outcome, 150, { message: 'Outcome cannot exceed 150 characters.' });
     required(s.notes, { message: 'Notes are required.' });
+    maxLength(s.notes, 1000, { message: 'Notes cannot exceed 1000 characters.' });
     required(s.next_followup_at, {
       message: 'Required when scheduling next follow-up.',
       when: ({ valueOf }) => valueOf(s.needs_followup),
@@ -401,6 +482,32 @@ export class FollowupsComponent implements OnInit {
 
   formatDt = formatIstDateTime;
   formatBudget = formatBudgetRange;
+
+  getWhatsAppUrl(phone: string, leadName: string): string {
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const defaultMsg = encodeURIComponent(
+      `Hello ${leadName}, following up on your property inquiry. Please let me know when we can connect.`
+    );
+    return `https://wa.me/${cleanPhone}?text=${defaultMsg}`;
+  }
+
+  getTempIcon(t: LeadTemperature): string {
+    switch (t) {
+      case 'Hot': return '🔥';
+      case 'Warm': return '☀️';
+      case 'Cold': return '❄️';
+      default: return '☀️';
+    }
+  }
+
+  getTempClass(t: LeadTemperature): string {
+    switch (t) {
+      case 'Hot': return 'temp-hot';
+      case 'Warm': return 'temp-warm';
+      case 'Cold': return 'temp-cold';
+      default: return 'temp-warm';
+    }
+  }
 
   private notify(msg: string, error: boolean): void {
     this.feedback.set(msg);

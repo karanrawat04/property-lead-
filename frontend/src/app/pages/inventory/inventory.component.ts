@@ -1,20 +1,22 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
+import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { form, FormField, minLength, pattern, required, submit, validate } from '@angular/forms/signals';
+import { form, FormField, required, minLength, maxLength, pattern, validate, submit } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/api.service';
+import { InventoryItem } from '../../core/models';
+import { handleNumericKeydown, parseOptionalNonNegativeNumber } from '../../core/validators';
 import { extractApiError } from '../../core/api-error';
-import { InventoryItem, TagItem } from '../../core/models';
-import { parseOptionalNonNegativeNumber } from '../../core/validators';
 
 @Component({
   selector: 'app-inventory',
-  imports: [FormsModule, FormField],
+  standalone: true,
+  imports: [CommonModule, FormsModule, FormField],
   template: `
     <div class="page-header">
       <div>
-        <h2 class="page-title">Inventory Management</h2>
-        <p class="page-subtitle">Lightweight text-only property inventory (zero photo/file storage) with unique codes & unit numbers like 410 C, 322 B</p>
+        <h1 class="page-title">Inventory Master</h1>
+        <p class="page-subtitle">Text and metadata details of property units (unique unit numbers like 410 C, 322 B)</p>
       </div>
       <button class="btn btn-primary" (click)="openCreate()">+ Add Inventory</button>
     </div>
@@ -35,13 +37,6 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
           (ngModelChange)="filterSearch.set($event)"
           (keyup.enter)="loadInventory()"
         />
-        <select class="toolbar-select" [ngModel]="filterTagId()" (ngModelChange)="filterTagId.set($event); loadInventory()">
-          <option value="">All Tags</option>
-          @for (t of tags(); track t.id) {
-            <option [value]="t.id">{{ t.name }}</option>
-          }
-          <option value="untagged">Untagged</option>
-        </select>
         <select class="toolbar-select" [ngModel]="filterType()" (ngModelChange)="filterType.set($event); loadInventory()">
           <option value="">All Property Types</option>
           @for (pt of propertyTypes; track pt) {
@@ -70,7 +65,6 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
                 <th>Project / Title</th>
                 <th>Type & Floor</th>
                 <th>Area / Price</th>
-                <th>Tag (Quick Change)</th>
                 <th style="width: 140px;">Actions</th>
               </tr>
             </thead>
@@ -97,20 +91,6 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
                   <td>
                     <div>{{ item.area_sqft ? item.area_sqft + ' sq.ft.' : '—' }}</div>
                     <div style="font-weight: 600;">{{ formatPrice(item.price) }}</div>
-                  </td>
-                  <td>
-                    <select
-                      class="tag-select"
-                      [ngModel]="item.tag_id ?? ''"
-                      (ngModelChange)="quickChangeTag(item, $event)"
-                      [style.borderColor]="item.tag_color || '#cbd5e1'"
-                      [style.color]="item.tag_color || '#0f172a'"
-                    >
-                      <option value="">— No Tag —</option>
-                      @for (t of tags(); track t.id) {
-                        <option [value]="t.id">{{ t.name }}</option>
-                      }
-                    </select>
                   </td>
                   <td>
                     <div style="display:flex; gap:6px;">
@@ -165,22 +145,6 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
                 }
               </div>
 
-              <div>
-                <select
-                  class="tag-select"
-                  style="width: 100%;"
-                  [ngModel]="item.tag_id ?? ''"
-                  (ngModelChange)="quickChangeTag(item, $event)"
-                  [style.borderColor]="item.tag_color || '#cbd5e1'"
-                  [style.color]="item.tag_color || '#0f172a'"
-                >
-                  <option value="">— No Tag —</option>
-                  @for (t of tags(); track t.id) {
-                    <option [value]="t.id">{{ t.name }}</option>
-                  }
-                </select>
-              </div>
-
               <div class="mobile-card-actions">
                 <button class="btn btn-secondary btn-sm" (click)="openEdit(item)">Edit</button>
                 <button class="btn btn-danger btn-sm" (click)="deleteItem(item)">Delete</button>
@@ -230,16 +194,6 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
                 </div>
 
                 <div class="form-group">
-                  <label>Tag (Status)</label>
-                  <select [formField]="invForm.tag_id">
-                    <option value="">— Select Tag —</option>
-                    @for (t of activeTags(); track t.id) {
-                      <option [value]="t.id">{{ t.name }} {{ t.description ? '— ' + t.description : '' }}</option>
-                    }
-                  </select>
-                </div>
-
-                <div class="form-group">
                   <label>Property Type</label>
                   <select [formField]="invForm.property_type">
                     @for (pt of propertyTypes; track pt) {
@@ -255,7 +209,13 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
 
                 <div class="form-group">
                   <label>Area (sq.ft.)</label>
-                  <input type="text" inputmode="decimal" [formField]="invForm.area_sqft" placeholder="e.g. 1250" />
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    [formField]="invForm.area_sqft"
+                    placeholder="e.g. 1250"
+                    (keydown)="onNumberKey($event, true)"
+                  />
                   @if (invForm.area_sqft().touched() && invForm.area_sqft().errors().length) {
                     <span class="field-error">{{ invForm.area_sqft().errors()[0].message }}</span>
                   }
@@ -263,7 +223,13 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
 
                 <div class="form-group">
                   <label>Price (INR)</label>
-                  <input type="text" inputmode="decimal" [formField]="invForm.price" placeholder="e.g. 6500000" />
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    [formField]="invForm.price"
+                    placeholder="e.g. 6500000"
+                    (keydown)="onNumberKey($event, true)"
+                  />
                   @if (invForm.price().touched() && invForm.price().errors().length) {
                     <span class="field-error">{{ invForm.price().errors()[0].message }}</span>
                   }
@@ -277,6 +243,9 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
                 <div class="form-group full">
                   <label>Notes (Text only — no photos stored)</label>
                   <textarea rows="2" [formField]="invForm.notes" placeholder="Facing, parking, key details, owner info..."></textarea>
+                  @if (invForm.notes().touched() && invForm.notes().errors().length) {
+                    <span class="field-error">{{ invForm.notes().errors()[0].message }}</span>
+                  }
                 </div>
               </div>
             </div>
@@ -291,21 +260,12 @@ import { parseOptionalNonNegativeNumber } from '../../core/validators';
       </div>
     }
   `,
-  styles: `
-    .tag-select {
-      padding: 5px 8px;
-      font-size: 12.5px;
-      font-weight: 600;
-      min-width: 130px;
-    }
-  `,
+  styles: ``,
 })
 export class InventoryComponent implements OnInit {
   private readonly api = inject(ApiService);
 
   protected readonly items = signal<InventoryItem[]>([]);
-  protected readonly tags = signal<TagItem[]>([]);
-  protected readonly activeTags = computed(() => this.tags().filter((t) => !!t.is_active));
   protected readonly loading = signal(true);
   protected readonly showModal = signal(false);
   protected readonly editingId = signal<number | null>(null);
@@ -315,7 +275,6 @@ export class InventoryComponent implements OnInit {
   protected readonly modalError = signal('');
 
   protected readonly filterSearch = signal('');
-  protected readonly filterTagId = signal('');
   protected readonly filterType = signal('');
 
   protected readonly propertyTypes = [
@@ -337,7 +296,6 @@ export class InventoryComponent implements OnInit {
     floor_wing: '',
     area_sqft: '',
     price: '',
-    tag_id: '',
     location: '',
     notes: '',
   });
@@ -345,12 +303,19 @@ export class InventoryComponent implements OnInit {
   protected readonly invForm = form(this.invModel, (s) => {
     required(s.unique_code, { message: 'Unique Inventory Code is required.' });
     minLength(s.unique_code, 2, { message: 'Unique code must be at least 2 characters.' });
+    maxLength(s.unique_code, 60, { message: 'Unique code cannot exceed 60 characters.' });
     pattern(s.unique_code, /^[A-Za-z0-9\-_\/\s]+$/, {
       message: 'Only letters, numbers, spaces, -, _, or / are allowed.',
     });
     required(s.unit_number, { message: 'Unit number is required (e.g. 410 C, 322 B).' });
+    maxLength(s.unit_number, 60, { message: 'Unit number cannot exceed 60 characters.' });
     required(s.title, { message: 'Property / Project title is required.' });
     minLength(s.title, 2, { message: 'Title must be at least 2 characters.' });
+    maxLength(s.title, 150, { message: 'Title cannot exceed 150 characters.' });
+
+    maxLength(s.floor_wing, 80, { message: 'Floor/Wing cannot exceed 80 characters.' });
+    maxLength(s.location, 180, { message: 'Location cannot exceed 180 characters.' });
+    maxLength(s.notes, 1000, { message: 'Notes cannot exceed 1000 characters.' });
 
     validate(s.area_sqft, ({ value }) => {
       const parsed = parseOptionalNonNegativeNumber(value());
@@ -369,15 +334,12 @@ export class InventoryComponent implements OnInit {
     });
   });
 
-  ngOnInit(): void {
-    this.loadTags();
-    this.loadInventory();
+  onNumberKey(event: KeyboardEvent, allowDecimal: boolean = false): void {
+    handleNumericKeydown(event, allowDecimal);
   }
 
-  loadTags(): void {
-    this.api.getTags().subscribe({
-      next: (res) => this.tags.set(res.data || []),
-    });
+  ngOnInit(): void {
+    this.loadInventory();
   }
 
   loadInventory(): void {
@@ -385,7 +347,6 @@ export class InventoryComponent implements OnInit {
     this.api
       .getInventory({
         search: this.filterSearch(),
-        tag_id: this.filterTagId(),
         property_type: this.filterType(),
       })
       .subscribe({
@@ -402,7 +363,6 @@ export class InventoryComponent implements OnInit {
 
   resetFilters(): void {
     this.filterSearch.set('');
-    this.filterTagId.set('');
     this.filterType.set('');
     this.loadInventory();
   }
@@ -410,7 +370,6 @@ export class InventoryComponent implements OnInit {
   openCreate(): void {
     this.editingId.set(null);
     this.modalError.set('');
-    const defaultSaleTag = this.tags().find((t) => t.name.toLowerCase() === 'for sale');
     this.invModel.set({
       unique_code: '',
       unit_number: '',
@@ -419,7 +378,6 @@ export class InventoryComponent implements OnInit {
       floor_wing: '',
       area_sqft: '',
       price: '',
-      tag_id: defaultSaleTag ? String(defaultSaleTag.id) : '',
       location: '',
       notes: '',
     });
@@ -438,7 +396,6 @@ export class InventoryComponent implements OnInit {
       floor_wing: item.floor_wing || '',
       area_sqft: item.area_sqft !== null && item.area_sqft !== undefined ? String(item.area_sqft) : '',
       price: item.price !== null && item.price !== undefined ? String(item.price) : '',
-      tag_id: item.tag_id ? String(item.tag_id) : '',
       location: item.location || '',
       notes: item.notes || '',
     });
@@ -463,7 +420,6 @@ export class InventoryComponent implements OnInit {
         floor_wing: v.floor_wing.trim() || null,
         area_sqft: parseOptionalNonNegativeNumber(v.area_sqft),
         price: parseOptionalNonNegativeNumber(v.price),
-        tag_id: v.tag_id ? Number(v.tag_id) : null,
         location: v.location.trim() || null,
         notes: v.notes.trim() || null,
       };
@@ -480,22 +436,6 @@ export class InventoryComponent implements OnInit {
         this.saving.set(false);
         this.modalError.set(extractApiError(err, 'Failed to save inventory.'));
       }
-    });
-  }
-
-  quickChangeTag(item: InventoryItem, newTagId: string | number): void {
-    const tagId = newTagId === '' || newTagId === null ? null : Number(newTagId);
-    this.api.updateInventoryTag(item.id, tagId).subscribe({
-      next: (res) => {
-        if (res.data) {
-          this.items.update((list) => list.map((x) => (x.id === item.id ? res.data! : x)));
-        }
-        this.notify(`Updated tag for ${item.unique_code} (${item.unit_number}).`, false);
-      },
-      error: (err) => {
-        this.notify(extractApiError(err, 'Failed to update tag.'), true);
-        this.loadInventory();
-      },
     });
   }
 

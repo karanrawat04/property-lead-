@@ -7,15 +7,28 @@
       </div>
 
       <nav class="nav-links desktop-nav" aria-label="Primary navigation">
+        <a routerLink="/dashboard" routerLinkActive="active">Dashboard</a>
         <a routerLink="/leads" routerLinkActive="active">Leads</a>
         <a routerLink="/followups" routerLinkActive="active">Follow-ups</a>
+        @if (auth.isAdmin()) {
+          <a routerLink="/agents" routerLinkActive="active">Agents</a>
+        }
         <a routerLink="/inventory" routerLinkActive="active">Inventory</a>
-        <a routerLink="/tags" routerLinkActive="active">Tag Master</a>
-        <a routerLink="/settings" routerLinkActive="active">Email & Security</a>
+        @if (auth.isAdmin()) {
+          <a routerLink="/settings" routerLinkActive="active">Email & Security</a>
+        }
       </nav>
 
       <div class="user-box">
-        <span class="user-name">{{ auth.user()?.name }}</span>
+        @if (auth.user()?.avatar_url) {
+          <img [src]="'/' + auth.user()!.avatar_url" alt="Avatar" class="topbar-avatar" />
+        } @else {
+          <div class="topbar-avatar-placeholder">{{ getInitials(auth.user()?.name) }}</div>
+        }
+        <div class="topbar-user-info">
+          <span class="user-name">{{ auth.user()?.name }}</span>
+          <span class="user-role-badge">{{ auth.user()?.role | uppercase }}</span>
+        </div>
         <button class="btn btn-secondary btn-sm" (click)="logout()">Logout</button>
       </div>
     </div>
@@ -26,6 +39,10 @@
   </main>
 
   <nav class="mobile-bottom-nav" aria-label="Mobile navigation">
+    <a routerLink="/dashboard" routerLinkActive="active">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+      <span>Dashboard</span>
+    </a>
     <a routerLink="/leads" routerLinkActive="active">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
       <span>Leads</span>
@@ -34,18 +51,25 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z"/></svg>
       <span>Follow-ups</span>
     </a>
-    <a routerLink="/inventory" routerLinkActive="active">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/></svg>
-      <span>Inventory</span>
-    </a>
-    <a routerLink="/tags" routerLinkActive="active">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58s1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41s-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/></svg>
-      <span>Tags</span>
-    </a>
-    <a routerLink="/settings" routerLinkActive="active">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4-8 5-8-5V6l8 5 8-5v2z"/></svg>
-      <span>Email</span>
-    </a>
+    @if (auth.isAdmin()) {
+      <a routerLink="/agents" routerLinkActive="active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        <span>Agents</span>
+      </a>
+      <a routerLink="/inventory" routerLinkActive="active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/></svg>
+        <span>Inventory</span>
+      </a>
+      <a routerLink="/settings" routerLinkActive="active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.44.17-.48.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+        <span>Settings</span>
+      </a>
+    } @else {
+      <a routerLink="/inventory" routerLinkActive="active">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2 12h3v8h6v-6h2v6h6v-8h3L12 3z"/></svg>
+        <span>Inventory</span>
+      </a>
+    }
   </nav>
 } @else {
   <router-outlet />

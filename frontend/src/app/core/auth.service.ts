@@ -18,6 +18,8 @@ export class AuthService {
   readonly token = this._token.asReadonly();
   readonly user = this._user.asReadonly();
   readonly isAuthenticated = computed(() => !!this._token());
+  readonly isAdmin = computed(() => this._user()?.role === 'admin');
+  readonly isAgent = computed(() => this._user()?.role === 'agent');
 
   private readStorage(key: string): string | null {
     try {
@@ -94,6 +96,19 @@ export class AuthService {
     this._token.set(null);
     this._user.set(null);
     this.router.navigate(['/login']);
+  }
+
+  refreshProfile(): Observable<ApiResponse<User>> {
+    return this.http.get<ApiResponse<User>>('/api/auth/me').pipe(
+      tap((res) => {
+        if (res.success && res.data) {
+          const currentToken = this._token();
+          if (currentToken) {
+            this.setSession(currentToken, res.data);
+          }
+        }
+      })
+    );
   }
 
   changePassword(current_password: string, new_password: string): Observable<ApiResponse<null>> {

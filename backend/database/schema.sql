@@ -11,6 +11,11 @@ CREATE TABLE IF NOT EXISTS `users` (
   `email` VARCHAR(150) NOT NULL,
   `password_hash` VARCHAR(255) NOT NULL,
   `role` ENUM('admin', 'agent') NOT NULL DEFAULT 'admin',
+  `mobile_number` VARCHAR(30) NULL,
+  `alt_number` VARCHAR(30) NULL,
+  `address` TEXT NULL,
+  `date_of_joining` DATE NULL,
+  `avatar_url` VARCHAR(255) NULL,
   `is_active` TINYINT(1) NOT NULL DEFAULT 1,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -30,18 +35,6 @@ CREATE TABLE IF NOT EXISTS `user_sessions` (
   CONSTRAINT `fk_user_sessions_user` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE IF NOT EXISTS `tag_master` (
-  `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `name` VARCHAR(60) NOT NULL,
-  `description` TEXT NULL,
-  `color` VARCHAR(20) NOT NULL DEFAULT '#2563eb',
-  `is_active` TINYINT(1) NOT NULL DEFAULT 1,
-  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `uq_tag_master_name` (`name`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS `inventory` (
   `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
   `unique_code` VARCHAR(60) NOT NULL COMMENT 'Unique identifier to distinguish inventory (e.g. T1-410C, INV-322B)',
@@ -52,15 +45,12 @@ CREATE TABLE IF NOT EXISTS `inventory` (
   `floor_wing` VARCHAR(80) NULL,
   `area_sqft` DECIMAL(12,2) NULL,
   `price` DECIMAL(15,2) NULL,
-  `tag_id` INT UNSIGNED NULL,
   `notes` TEXT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_inventory_unique_code` (`unique_code`),
-  KEY `idx_inventory_unit_number` (`unit_number`),
-  KEY `idx_inventory_tag_id` (`tag_id`),
-  CONSTRAINT `fk_inventory_tag` FOREIGN KEY (`tag_id`) REFERENCES `tag_master` (`id`) ON DELETE SET NULL
+  KEY `idx_inventory_unit_number` (`unit_number`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `leads` (
@@ -74,11 +64,13 @@ CREATE TABLE IF NOT EXISTS `leads` (
   `preferred_location` VARCHAR(180) NULL,
   `property_requirement` VARCHAR(120) NULL,
   `interested_inventory_id` INT UNSIGNED NULL,
+  `assigned_agent_id` INT UNSIGNED NULL,
   `is_visited` TINYINT(1) NOT NULL DEFAULT 0,
   `visited_at` DATETIME NULL,
   `needs_followup` TINYINT(1) NOT NULL DEFAULT 1,
   `next_followup_at` DATETIME NULL,
   `status` ENUM('New', 'Contacted', 'Visited', 'Negotiation', 'Closed Won', 'Closed Lost') NOT NULL DEFAULT 'New',
+  `temperature` ENUM('Hot', 'Warm', 'Cold') NOT NULL DEFAULT 'Warm',
   `notes` TEXT NULL,
   `reminder_sent_for` DATETIME NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -86,9 +78,12 @@ CREATE TABLE IF NOT EXISTS `leads` (
   PRIMARY KEY (`id`),
   KEY `idx_leads_phone` (`phone`),
   KEY `idx_leads_status` (`status`),
+  KEY `idx_leads_temperature` (`temperature`),
+  KEY `idx_leads_assigned_agent` (`assigned_agent_id`),
   KEY `idx_leads_next_followup` (`needs_followup`, `next_followup_at`),
   KEY `idx_leads_visited` (`is_visited`),
-  CONSTRAINT `fk_leads_inventory` FOREIGN KEY (`interested_inventory_id`) REFERENCES `inventory` (`id`) ON DELETE SET NULL
+  CONSTRAINT `fk_leads_inventory` FOREIGN KEY (`interested_inventory_id`) REFERENCES `inventory` (`id`) ON DELETE SET NULL,
+  CONSTRAINT `fk_leads_agent` FOREIGN KEY (`assigned_agent_id`) REFERENCES `users` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `lead_followups` (
@@ -143,11 +138,4 @@ CREATE TABLE IF NOT EXISTS `reminder_logs` (
   CONSTRAINT `fk_reminder_logs_lead` FOREIGN KEY (`lead_id`) REFERENCES `leads` (`id`) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Default Tag Master entries
-INSERT IGNORE INTO `tag_master` (`name`, `description`, `color`, `is_active`) VALUES
-  ('For Sale', 'Property available for outright sale', '#16a34a', 1),
-  ('For Rent', 'Property available for rent or lease', '#2563eb', 1),
-  ('Sold', 'Property has been sold and is no longer available', '#dc2626', 1),
-  ('Rented', 'Property is currently leased / rented out', '#9333ea', 1),
-  ('Reserved', 'Token or booking amount received; temporarily on hold', '#d97706', 1);
 

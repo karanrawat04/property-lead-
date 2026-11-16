@@ -15,14 +15,17 @@ import {
 } from '@angular/forms/signals';
 import { firstValueFrom } from 'rxjs';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { extractApiError } from '../../core/api-error';
-import { InventoryItem, Lead, LeadStatus } from '../../core/models';
+import { AgentDropdownItem, InventoryItem, Lead, LeadStatus, LeadTemperature } from '../../core/models';
 import { IstDatetimeField } from '../../shared/ist-datetime-field/ist-datetime-field';
 import { LeadSourceBadge } from '../../shared/lead-source/lead-source-badge';
 import { LeadSourceSelect } from '../../shared/lead-source/lead-source-select';
 import {
   formatBudgetRange,
   formatIstDateTime,
+  handleNumericKeydown,
+  handlePhoneKeydown,
   isBudgetRangeValid,
   isValidIstDateTimeValue,
   nowIstDateTimeLocal,
@@ -64,6 +67,21 @@ import {
             <option [value]="s">{{ s }}</option>
           }
         </select>
+        <select class="toolbar-select" [ngModel]="filterTemperature()" (ngModelChange)="filterTemperature.set($event); loadLeads()">
+          <option value="">Temp: All</option>
+          <option value="Hot">🔥 Hot</option>
+          <option value="Warm">☀️ Warm</option>
+          <option value="Cold">❄️ Cold</option>
+        </select>
+        @if (auth.isAdmin()) {
+          <select class="toolbar-select" [ngModel]="filterAgent()" (ngModelChange)="filterAgent.set($event); loadLeads()">
+            <option value="">Agent: All</option>
+            <option value="unassigned">Unassigned</option>
+            @for (a of agents(); track a.id) {
+              <option [value]="a.id">{{ a.name }}</option>
+            }
+          </select>
+        }
         <select class="toolbar-select" [ngModel]="filterVisited()" (ngModelChange)="filterVisited.set($event); loadLeads()">
           <option value="">Visited: All</option>
           <option value="1">Visited Only</option>
@@ -94,7 +112,9 @@ import {
             <thead>
               <tr>
                 <th>Lead Contact</th>
+                <th>Temp</th>
                 <th>Budget & Requirement</th>
+                <th>Assigned Agent</th>
                 <th>Visited</th>
                 <th>Follow-up</th>
                 <th>Status</th>
@@ -105,8 +125,17 @@ import {
               @for (lead of leads(); track lead.id) {
                 <tr>
                   <td>
-                    <div style="font-weight: 700;">{{ lead.full_name }}</div>
-                    <div><a class="phone-link" [href]="'tel:' + lead.phone">{{ lead.phone }}</a></div>
+                    <div style="font-weight: 700; font-size: 14.5px;">{{ lead.full_name }}</div>
+                    <div style="display:flex; align-items:center; gap:6px; margin: 3px 0;">
+                      <a class="phone-link" [href]="'tel:' + lead.phone">📞 {{ lead.phone }}</a>
+                      <a
+                        [href]="getWhatsAppUrl(lead.phone, lead.full_name)"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="btn-mini btn-whatsapp"
+                        title="Chat on WhatsApp"
+                      >💬</a>
+                    </div>
                     @if (lead.email) {
                       <div class="page-subtitle">{{ lead.email }}</div>
                     }
@@ -115,6 +144,17 @@ import {
                         <app-lead-source-badge [source]="lead.source" />
                       </div>
                     }
+                  </td>
+                  <td>
+                    <button
+                      type="button"
+                      class="temp-badge"
+                      [ngClass]="getTempClass(lead.temperature)"
+                      (click)="cycleTemperature(lead)"
+                      title="Click to cycle temperature (Hot -> Warm -> Cold)"
+                    >
+                      {{ getTempIcon(lead.temperature) }} {{ lead.temperature }}
+                    </button>
                   </td>
                   <td>
                     <div style="font-weight: 600;">{{ formatBudget(lead.budget_min, lead.budget_max) }}</div>
@@ -132,6 +172,25 @@ import {
                           Unit {{ lead.inv_unit_number }} — {{ lead.inv_title }}
                         </span>
                       </div>
+                    }
+                  </td>
+                  <td>
+                    @if (auth.isAdmin()) {
+                      <select
+                        class="agent-select"
+                        [ngModel]="lead.assigned_agent_id ? (lead.assigned_agent_id + '') : ''"
+                        (ngModelChange)="assignAgent(lead, $event)"
+                        title="Assign agent"
+                      >
+                        <option value="">— Unassigned —</option>
+                        @for (ag of agents(); track ag.id) {
+                          <option [value]="ag.id">{{ ag.name }}</option>
+                        }
+                      </select>
+                    } @else {
+                      <span class="agent-tag">
+                        👤 {{ lead.assigned_agent_name || 'Unassigned' }}
+                      </span>
                     }
                   </td>
                   <td>
@@ -188,7 +247,10 @@ import {
               <div class="mobile-card-head">
                 <div>
                   <div style="font-weight: 700; font-size: 15.5px;">{{ lead.full_name }}</div>
-                  <a class="phone-link" [href]="'tel:' + lead.phone">{{ lead.phone }}</a>
+                  <div style="display:flex; align-items:center; gap:6px; margin: 3px 0;">
+                    <a class="phone-link" [href]="'tel:' + lead.phone">📞 {{ lead.phone }}</a>
+                    <a [href]="getWhatsAppUrl(lead.phone, lead.full_name)" target="_blank" rel="noopener noreferrer" class="btn-mini btn-whatsapp">💬</a>
+                  </div>
                   @if (lead.email) {
                     <div class="page-subtitle">{{ lead.email }}</div>
                   }
@@ -198,10 +260,24 @@ import {
                     </div>
                   }
                 </div>
-                <span class="badge" [ngClass]="statusBadgeClass(lead.status)">{{ lead.status }}</span>
+                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:4px;">
+                  <span class="badge" [ngClass]="statusBadgeClass(lead.status)">{{ lead.status }}</span>
+                  <button
+                    type="button"
+                    class="temp-badge"
+                    [ngClass]="getTempClass(lead.temperature)"
+                    (click)="cycleTemperature(lead)"
+                  >
+                    {{ getTempIcon(lead.temperature) }} {{ lead.temperature }}
+                  </button>
+                </div>
               </div>
 
               <div class="mobile-card-meta">
+                <div>
+                  <span class="mobile-meta-label">Assigned Agent</span>
+                  <strong>{{ lead.assigned_agent_name || 'Unassigned' }}</strong>
+                </div>
                 <div>
                   <span class="mobile-meta-label">Budget</span>
                   <strong>{{ formatBudget(lead.budget_min, lead.budget_max) }}</strong>
@@ -237,6 +313,8 @@ import {
               </div>
 
               <div class="mobile-card-actions">
+                <a [href]="'tel:' + lead.phone" class="btn btn-secondary btn-sm" style="flex:1; text-align:center;">📞 Call</a>
+                <a [href]="getWhatsAppUrl(lead.phone, lead.full_name)" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-whatsapp" style="flex:1; text-align:center;">💬 WhatsApp</a>
                 <button
                   type="button"
                   class="btn btn-sm"
@@ -280,7 +358,12 @@ import {
 
                 <div class="form-group">
                   <label>Phone Number <span class="req">*</span></label>
-                  <input type="text" [formField]="leadForm.phone" placeholder="e.g. +91 9876543210" />
+                  <input
+                    type="tel"
+                    [formField]="leadForm.phone"
+                    placeholder="e.g. +91 9876543210"
+                    (keydown)="onPhoneKey($event)"
+                  />
                   @if (leadForm.phone().touched() && leadForm.phone().errors().length) {
                     <span class="field-error">{{ leadForm.phone().errors()[0].message }}</span>
                   }
@@ -301,7 +384,13 @@ import {
 
                 <div class="form-group">
                   <label>Budget Min (INR)</label>
-                  <input type="text" inputmode="decimal" [formField]="leadForm.budget_min" placeholder="e.g. 4000000" />
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    [formField]="leadForm.budget_min"
+                    placeholder="e.g. 4000000"
+                    (keydown)="onNumberKey($event, true)"
+                  />
                   @if (leadForm.budget_min().touched() && leadForm.budget_min().errors().length) {
                     <span class="field-error">{{ leadForm.budget_min().errors()[0].message }}</span>
                   }
@@ -309,7 +398,13 @@ import {
 
                 <div class="form-group">
                   <label>Budget Max (INR)</label>
-                  <input type="text" inputmode="decimal" [formField]="leadForm.budget_max" placeholder="e.g. 7500000" />
+                  <input
+                    type="text"
+                    inputmode="decimal"
+                    [formField]="leadForm.budget_max"
+                    placeholder="e.g. 7500000"
+                    (keydown)="onNumberKey($event, true)"
+                  />
                   @if ((leadForm.budget_max().touched() || leadForm.budget_min().touched()) && leadForm.budget_max().errors().length) {
                     <span class="field-error">{{ leadForm.budget_max().errors()[0].message }}</span>
                   }
@@ -332,7 +427,6 @@ import {
                     @for (inv of inventory(); track inv.id) {
                       <option [value]="inv.id">
                         {{ inv.unique_code }} · Unit {{ inv.unit_number }} ({{ inv.title }})
-                        {{ inv.tag_name ? '[' + inv.tag_name + ']' : '' }}
                       </option>
                     }
                   </select>
@@ -346,6 +440,27 @@ import {
                     }
                   </select>
                 </div>
+
+                <div class="form-group">
+                  <label>Temperature <span class="req">*</span></label>
+                  <select [formField]="leadForm.temperature">
+                    <option value="Hot">🔥 Hot (High Interest / Urgent)</option>
+                    <option value="Warm">☀️ Warm (Evaluating / Normal)</option>
+                    <option value="Cold">❄️ Cold (Low Intent / Long Term)</option>
+                  </select>
+                </div>
+
+                @if (auth.isAdmin()) {
+                  <div class="form-group">
+                    <label>Assign to Agent</label>
+                    <select [formField]="leadForm.assigned_agent_id">
+                      <option value="">— Unassigned —</option>
+                      @for (ag of agents(); track ag.id) {
+                        <option [value]="ag.id">{{ ag.name }} ({{ ag.email }})</option>
+                      }
+                    </select>
+                  </div>
+                }
 
                 <div class="form-group">
                   <label class="checkbox-row" style="margin-top: 8px;">
@@ -385,6 +500,9 @@ import {
                 <div class="form-group full">
                   <label>Lead Notes</label>
                   <textarea rows="3" [formField]="leadForm.notes" placeholder="Client preferences, call summary, special notes..."></textarea>
+                  @if (leadForm.notes().touched() && leadForm.notes().errors().length) {
+                    <span class="field-error">{{ leadForm.notes().errors()[0].message }}</span>
+                  }
                 </div>
               </div>
             </div>
@@ -531,13 +649,67 @@ import {
       border-radius: 8px;
       background: var(--surface-alt);
     }
+    .temp-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 11.5px;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: transform 0.1s ease;
+    }
+    .temp-badge:hover {
+      transform: scale(1.05);
+    }
+    .temp-hot { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; }
+    .temp-warm { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; }
+    .temp-cold { background: #dbeafe; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .btn-mini {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      border-radius: 6px;
+      text-decoration: none;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .btn-whatsapp {
+      background: #dcfce7;
+      color: #15803d;
+      border: 1px solid #bbf7d0;
+    }
+    .btn-whatsapp:hover { background: #bbf7d0; }
+    .agent-select {
+      font-size: 12.5px;
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      max-width: 140px;
+    }
+    .agent-tag {
+      font-size: 12px;
+      background: #f1f5f9;
+      color: #334155;
+      padding: 3px 7px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
   `,
 })
 export class LeadsComponent implements OnInit {
   private readonly api = inject(ApiService);
+  protected readonly auth = inject(AuthService);
 
   protected readonly leads = signal<Lead[]>([]);
   protected readonly inventory = signal<InventoryItem[]>([]);
+  protected readonly agents = signal<AgentDropdownItem[]>([]);
   protected readonly loading = signal(true);
   protected readonly feedback = signal('');
   protected readonly isError = signal(false);
@@ -545,6 +717,8 @@ export class LeadsComponent implements OnInit {
   // Filters
   protected readonly filterSearch = signal('');
   protected readonly filterStatus = signal('');
+  protected readonly filterTemperature = signal('');
+  protected readonly filterAgent = signal('');
   protected readonly filterVisited = signal('');
   protected readonly filterFollowupScope = signal('');
 
@@ -581,6 +755,8 @@ export class LeadsComponent implements OnInit {
     property_requirement: '',
     preferred_location: '',
     interested_inventory_id: '',
+    assigned_agent_id: '',
+    temperature: 'Warm' as LeadTemperature,
     status: 'New' as LeadStatus,
     is_visited: false,
     visited_at: '',
@@ -595,11 +771,17 @@ export class LeadsComponent implements OnInit {
     maxLength(s.full_name, 120, { message: 'Full name cannot exceed 120 characters.' });
 
     required(s.phone, { message: 'Phone number is required.' });
+    maxLength(s.phone, 30, { message: 'Phone number cannot exceed 30 characters.' });
     pattern(s.phone, /^[0-9+\-\s()]{7,20}$/, {
       message: 'Enter a valid 7–20 digit phone number.',
     });
 
     email(s.email, { message: 'Enter a valid email address.' });
+    maxLength(s.email, 150, { message: 'Email cannot exceed 150 characters.' });
+
+    maxLength(s.property_requirement, 120, { message: 'Requirement cannot exceed 120 characters.' });
+    maxLength(s.preferred_location, 180, { message: 'Preferred location cannot exceed 180 characters.' });
+    maxLength(s.notes, 1000, { message: 'Notes cannot exceed 1000 characters.' });
 
     validate(s.budget_min, ({ value }) => {
       const parsed = parseOptionalNonNegativeNumber(value());
@@ -660,7 +842,9 @@ export class LeadsComponent implements OnInit {
       return undefined;
     });
     required(s.channel, { message: 'Channel is required.' });
+    maxLength(s.outcome, 150, { message: 'Outcome cannot exceed 150 characters.' });
     required(s.notes, { message: 'Follow-up notes are required.' });
+    maxLength(s.notes, 1000, { message: 'Notes cannot exceed 1000 characters.' });
     required(s.next_followup_at, {
       message: 'Please select the next follow-up date & time.',
       when: ({ valueOf }) => valueOf(s.needs_followup),
@@ -673,10 +857,21 @@ export class LeadsComponent implements OnInit {
     });
   });
 
+  onPhoneKey(event: KeyboardEvent): void {
+    handlePhoneKeydown(event);
+  }
+
+  onNumberKey(event: KeyboardEvent, allowDecimal: boolean = false): void {
+    handleNumericKeydown(event, allowDecimal);
+  }
+
   ngOnInit(): void {
     this.loadLeads();
     this.api.getInventory().subscribe({
       next: (res) => this.inventory.set(res.data || []),
+    });
+    this.api.getAgentsDropdown().subscribe({
+      next: (res) => this.agents.set(res.data || []),
     });
   }
 
@@ -686,6 +881,8 @@ export class LeadsComponent implements OnInit {
       .getLeads({
         search: this.filterSearch(),
         status: this.filterStatus(),
+        temperature: this.filterTemperature(),
+        assigned_agent_id: this.filterAgent(),
         is_visited: this.filterVisited(),
         followup_scope: this.filterFollowupScope(),
       })
@@ -704,6 +901,8 @@ export class LeadsComponent implements OnInit {
   resetFilters(): void {
     this.filterSearch.set('');
     this.filterStatus.set('');
+    this.filterTemperature.set('');
+    this.filterAgent.set('');
     this.filterVisited.set('');
     this.filterFollowupScope.set('');
     this.loadLeads();
@@ -722,6 +921,8 @@ export class LeadsComponent implements OnInit {
       property_requirement: '',
       preferred_location: '',
       interested_inventory_id: '',
+      assigned_agent_id: '',
+      temperature: 'Warm',
       status: 'New',
       is_visited: false,
       visited_at: '',
@@ -746,6 +947,8 @@ export class LeadsComponent implements OnInit {
       property_requirement: lead.property_requirement || '',
       preferred_location: lead.preferred_location || '',
       interested_inventory_id: lead.interested_inventory_id ? String(lead.interested_inventory_id) : '',
+      assigned_agent_id: lead.assigned_agent_id ? String(lead.assigned_agent_id) : '',
+      temperature: lead.temperature || 'Warm',
       status: lead.status,
       is_visited: !!lead.is_visited,
       visited_at: toDateTimeLocalValue(lead.visited_at),
@@ -784,6 +987,8 @@ export class LeadsComponent implements OnInit {
         property_requirement: v.property_requirement.trim() || null,
         preferred_location: v.preferred_location.trim() || null,
         interested_inventory_id: v.interested_inventory_id ? Number(v.interested_inventory_id) : null,
+        assigned_agent_id: v.assigned_agent_id ? Number(v.assigned_agent_id) : null,
+        temperature: v.temperature,
         status: v.status,
         is_visited: !!v.is_visited,
         visited_at: v.is_visited && v.visited_at ? v.visited_at : null,
@@ -805,6 +1010,55 @@ export class LeadsComponent implements OnInit {
         this.modalError.set(extractApiError(err, 'Failed to save lead.'));
       }
     });
+  }
+
+  async cycleTemperature(lead: Lead): Promise<void> {
+    const next: LeadTemperature =
+      lead.temperature === 'Hot' ? 'Warm' : lead.temperature === 'Warm' ? 'Cold' : 'Hot';
+    try {
+      await firstValueFrom(this.api.setLeadTemperature(lead.id, next));
+      lead.temperature = next;
+      this.notify(`Lead marked as ${next}.`, false);
+    } catch (err) {
+      this.notify(extractApiError(err, 'Failed to update temperature.'), true);
+    }
+  }
+
+  async assignAgent(lead: Lead, agentIdStr: string): Promise<void> {
+    const agentId = agentIdStr ? Number(agentIdStr) : null;
+    try {
+      const res = await firstValueFrom(this.api.assignLead(lead.id, agentId));
+      this.notify(res.message || 'Lead assigned.', false);
+      this.loadLeads();
+    } catch (err) {
+      this.notify(extractApiError(err, 'Failed to assign lead.'), true);
+    }
+  }
+
+  getWhatsAppUrl(phone: string, leadName: string): string {
+    const cleanPhone = phone.replace(/[^0-9]/g, '');
+    const defaultMsg = encodeURIComponent(
+      `Hello ${leadName}, this is regarding your property requirement inquiry. When would be a good time to connect?`
+    );
+    return `https://wa.me/${cleanPhone}?text=${defaultMsg}`;
+  }
+
+  getTempIcon(t: LeadTemperature): string {
+    switch (t) {
+      case 'Hot': return '🔥';
+      case 'Warm': return '☀️';
+      case 'Cold': return '❄️';
+      default: return '☀️';
+    }
+  }
+
+  getTempClass(t: LeadTemperature): string {
+    switch (t) {
+      case 'Hot': return 'temp-hot';
+      case 'Warm': return 'temp-warm';
+      case 'Cold': return 'temp-cold';
+      default: return 'temp-warm';
+    }
   }
 
   toggleVisited(lead: Lead): void {

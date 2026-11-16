@@ -41,6 +41,31 @@ if (str_starts_with($route, '/api/')) {
 $route = '/' . trim($route, '/');
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
+// Serve uploaded avatars if routed through PHP dev server
+if (preg_match('#^/(?:api/)?uploads/(.+)$#', $requestUri, $upMatches)) {
+    $baseUploadDir = is_dir(__DIR__ . '/../uploads') ? (__DIR__ . '/../uploads') : (dirname(__DIR__, 2) . '/uploads');
+    $filePath = $baseUploadDir . '/' . $upMatches[1];
+    $real = realpath($filePath);
+    $realBase = realpath($baseUploadDir);
+    if ($real !== false && $realBase !== false && str_starts_with($real, $realBase) && is_file($real)) {
+        $ext = strtolower(pathinfo($real, PATHINFO_EXTENSION));
+        $mimes = [
+            'jpg' => 'image/jpeg',
+            'jpeg' => 'image/jpeg',
+            'png' => 'image/png',
+            'webp' => 'image/webp',
+            'gif' => 'image/gif',
+        ];
+        header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
+        header('Content-Length: ' . filesize($real));
+        header('Cache-Control: public, max-age=86400');
+        readfile($real);
+        exit;
+    }
+    http_response_code(404);
+    exit;
+}
+
 function readJsonBody(): array
 {
     $raw = file_get_contents('php://input');
@@ -190,6 +215,11 @@ try {
             'name' => $currentUser['name'],
             'email' => $currentUser['email'],
             'role' => $currentUser['role'],
+            'mobile_number' => $currentUser['mobile_number'] ?? null,
+            'alt_number' => $currentUser['alt_number'] ?? null,
+            'address' => $currentUser['address'] ?? null,
+            'date_of_joining' => $currentUser['date_of_joining'] ?? null,
+            'avatar_url' => $currentUser['avatar_url'] ?? null,
             'timezone' => date_default_timezone_get(),
         ]);
     }
@@ -217,85 +247,320 @@ try {
     }
 
     // -------------------------------------------------------------------------
-    // TAG MASTER ROUTES
+    // DASHBOARD ANALYTICS ROUTE
     // -------------------------------------------------------------------------
-    if ($route === '/tags' && $method === 'GET') {
+    if ($route === '/dashboard/stats' && $method === 'GET') {
+        $isAgent = ($currentUser['role'] === 'agent');
+        $agentId = (int)$currentUser['id'];
+
+        $whereBase = $isAgent ? ' WHERE l.assigned_agent_id = ' . $agentId : '';
+        $whereAnd = $isAgent ? ' AND l.assigned_agent_id = ' . $agentId : '';
+
+        // Total leads
+        $totalLeads = (int)$pdo->query('SELECT COUNT(*) FROM leads l' . $whereBase)->fetchColumn();
+
+        // Temperature counts
+        $hotLeads = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.temperature = 'Hot'" . $whereAnd)->fetchColumn();
+        $warmLeads = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.temperature = 'Warm'" . $whereAnd)->fetchColumn();
+        $coldLeads = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.temperature = 'Cold'" . $whereAnd)->fetchColumn();
+
+        // Visited leads
+        $visitedLeads = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.is_visited = 1" . $whereAnd)->fetchColumn();
+
+        // Followup counts
+        $overdueFollowups = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.needs_followup = 1 AND l.next_followup_at IS NOT NULL AND l.next_followup_at < NOW() AND l.status NOT IN ('Closed Won', 'Closed Lost')" . $whereAnd)->fetchColumn();
+        $todayFollowups = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.needs_followup = 1 AND l.next_followup_at IS NOT NULL AND DATE(l.next_followup_at) = CURDATE() AND l.status NOT IN ('Closed Won', 'Closed Lost')" . $whereAnd)->fetchColumn();
+        $upcomingFollowups = (int)$pdo->query("SELECT COUNT(*) FROM leads l WHERE l.needs_followup = 1 AND l.next_followup_at IS NOT NULL AND DATE(l.next_followup_at) > CURDATE() AND l.status NOT IN ('Closed Won', 'Closed Lost')" . $whereAnd)->fetchColumn();
+
+        // Status breakdown
+        $statusRows = $pdo->query("SELECT l.status, COUNT(*) as cnt FROM leads l $whereBase GROUP BY l.status")->fetchAll();
+        $statusCounts = [
+            'New' => 0,
+            'Contacted' => 0,
+            'Visited' => 0,
+            'Negotiation' => 0,
+            'Closed Won' => 0,
+            'Closed Lost' => 0,
+        ];
+        foreach ($statusRows as $row) {
+            if (isset($statusCounts[$row['status']])) {
+                $statusCounts[$row['status']] = (int)$row['cnt'];
+            }
+        }
+
+        $closedWon = $statusCounts['Closed Won'];
+        $closedLost = $statusCounts['Closed Lost'];
+        $conversionRate = ($totalLeads > 0) ? round(($closedWon / $totalLeads) * 100, 1) : 0.0;
+
+        // Urgent leads requiring attention (Hot leads or Overdue / Today follow-ups)
+        $urgentSql = "SELECT l.id, l.full_name, l.phone, l.email, l.status, l.temperature, l.needs_followup, l.next_followup_at, l.is_visited,
+                             i.unit_number AS inv_unit_number, i.title AS inv_title,
+                             ag.name AS assigned_agent_name, ag.avatar_url AS assigned_agent_avatar
+                      FROM leads l
+                      LEFT JOIN inventory i ON i.id = l.interested_inventory_id
+                      LEFT JOIN users ag ON ag.id = l.assigned_agent_id
+                      WHERE l.status NOT IN ('Closed Won', 'Closed Lost')
+                        AND (l.temperature = 'Hot' OR (l.needs_followup = 1 AND l.next_followup_at IS NOT NULL AND DATE(l.next_followup_at) <= CURDATE()))
+                        $whereAnd
+                      ORDER BY (l.temperature = 'Hot') DESC, (l.next_followup_at IS NOT NULL AND l.next_followup_at < NOW()) DESC, l.next_followup_at ASC, l.updated_at DESC
+                      LIMIT 8";
+        $urgentLeads = $pdo->query($urgentSql)->fetchAll();
+
+        // Agents performance list (for Admin)
+        $agentsPerformance = [];
+        if (!$isAgent) {
+            $perfSql = "SELECT u.id, u.name, u.email, u.mobile_number, u.avatar_url, u.is_active,
+                               COUNT(l.id) AS total_assigned,
+                               SUM(CASE WHEN l.temperature = 'Hot' AND l.status NOT IN ('Closed Won', 'Closed Lost') THEN 1 ELSE 0 END) AS hot_count,
+                               SUM(CASE WHEN l.is_visited = 1 THEN 1 ELSE 0 END) AS visited_count,
+                               SUM(CASE WHEN l.status = 'Closed Won' THEN 1 ELSE 0 END) AS won_count,
+                               SUM(CASE WHEN l.needs_followup = 1 AND l.next_followup_at IS NOT NULL AND l.next_followup_at < NOW() AND l.status NOT IN ('Closed Won', 'Closed Lost') THEN 1 ELSE 0 END) AS overdue_count
+                        FROM users u
+                        LEFT JOIN leads l ON l.assigned_agent_id = u.id
+                        WHERE u.role = 'agent'
+                        GROUP BY u.id
+                        ORDER BY u.is_active DESC, total_assigned DESC, u.name ASC";
+            $agentsPerformance = $pdo->query($perfSql)->fetchAll();
+        }
+
+        Response::success([
+            'role' => $currentUser['role'],
+            'total_leads' => $totalLeads,
+            'hot_leads' => $hotLeads,
+            'warm_leads' => $warmLeads,
+            'cold_leads' => $coldLeads,
+            'visited_leads' => $visitedLeads,
+            'closed_won_leads' => $closedWon,
+            'closed_lost_leads' => $closedLost,
+            'conversion_rate' => $conversionRate,
+            'overdue_followups' => $overdueFollowups,
+            'today_followups' => $todayFollowups,
+            'upcoming_followups' => $upcomingFollowups,
+            'status_breakdown' => $statusCounts,
+            'urgent_leads' => $urgentLeads,
+            'agents_performance' => $agentsPerformance,
+        ]);
+    }
+
+    // -------------------------------------------------------------------------
+    // AGENT MANAGEMENT ROUTES
+    // -------------------------------------------------------------------------
+    if ($route === '/agents/dropdown' && $method === 'GET') {
+        $stmt = $pdo->query("SELECT id, name, email, avatar_url, mobile_number FROM users WHERE role = 'agent' AND is_active = 1 ORDER BY name ASC");
+        Response::success($stmt->fetchAll());
+    }
+
+    if ($route === '/agents' && $method === 'GET') {
+        if ($currentUser['role'] !== 'admin') {
+            $stmt = $pdo->prepare(
+                "SELECT u.id, u.name, u.email, u.role, u.mobile_number, u.alt_number, u.address, u.date_of_joining, u.avatar_url, u.is_active, u.created_at,
+                        COUNT(l.id) AS assigned_leads_count,
+                        SUM(CASE WHEN l.temperature = 'Hot' THEN 1 ELSE 0 END) AS hot_leads_count,
+                        SUM(CASE WHEN l.status = 'Closed Won' THEN 1 ELSE 0 END) AS won_leads_count
+                 FROM users u
+                 LEFT JOIN leads l ON l.assigned_agent_id = u.id
+                 WHERE u.id = ?
+                 GROUP BY u.id"
+            );
+            $stmt->execute([$currentUser['id']]);
+            Response::success($stmt->fetchAll());
+        }
+
         $stmt = $pdo->query(
-            'SELECT t.*, COUNT(i.id) AS inventory_count
-             FROM tag_master t
-             LEFT JOIN inventory i ON i.tag_id = t.id
-             GROUP BY t.id
-             ORDER BY t.is_active DESC, t.name ASC'
+            "SELECT u.id, u.name, u.email, u.role, u.mobile_number, u.alt_number, u.address, u.date_of_joining, u.avatar_url, u.is_active, u.created_at,
+                    COUNT(l.id) AS assigned_leads_count,
+                    SUM(CASE WHEN l.temperature = 'Hot' AND l.status NOT IN ('Closed Won', 'Closed Lost') THEN 1 ELSE 0 END) AS hot_leads_count,
+                    SUM(CASE WHEN l.is_visited = 1 THEN 1 ELSE 0 END) AS visited_leads_count,
+                    SUM(CASE WHEN l.status = 'Closed Won' THEN 1 ELSE 0 END) AS won_leads_count,
+                    SUM(CASE WHEN l.needs_followup = 1 AND l.next_followup_at IS NOT NULL AND l.next_followup_at < NOW() AND l.status NOT IN ('Closed Won', 'Closed Lost') THEN 1 ELSE 0 END) AS overdue_count
+             FROM users u
+             LEFT JOIN leads l ON l.assigned_agent_id = u.id
+             WHERE u.role = 'agent'
+             GROUP BY u.id
+             ORDER BY u.is_active DESC, u.name ASC"
         );
         Response::success($stmt->fetchAll());
     }
 
-    if ($route === '/tags' && $method === 'POST') {
+    if ($route === '/agents' && $method === 'POST') {
+        if ($currentUser['role'] !== 'admin') {
+            Response::error('Only admins can create agent profiles.', 403);
+        }
+
         $body = readJsonBody();
-        $validated = Validator::validateTag($body);
+        $validated = Validator::validateAgent($body, true);
         if (!empty($validated['errors'])) {
             Response::error('Validation failed.', 422, $validated['errors']);
         }
         $data = $validated['data'];
 
-        $dup = $pdo->prepare('SELECT id FROM tag_master WHERE LOWER(name) = LOWER(?) LIMIT 1');
-        $dup->execute([$data['name']]);
-        if ($dup->fetch()) {
-            Response::error('A tag with this name already exists.', 409, ['name' => 'Tag name must be unique.']);
+        $chk = $pdo->prepare('SELECT id FROM users WHERE email = ? LIMIT 1');
+        $chk->execute([$data['email']]);
+        if ($chk->fetch()) {
+            Response::error('An account with this email address already exists.', 422, ['email' => 'Email already registered.']);
         }
 
-        $stmt = $pdo->prepare('INSERT INTO tag_master (name, description, color, is_active) VALUES (?, ?, ?, ?)');
-        $stmt->execute([$data['name'], $data['description'], $data['color'], $data['is_active']]);
-        $id = (int)$pdo->lastInsertId();
+        $passwordHash = password_hash($data['password'], PASSWORD_DEFAULT);
+        $ins = $pdo->prepare(
+            "INSERT INTO users (name, email, password_hash, role, mobile_number, alt_number, address, date_of_joining, avatar_url, is_active)
+             VALUES (?, ?, ?, 'agent', ?, ?, ?, ?, ?, ?)"
+        );
+        $ins->execute([
+            $data['name'],
+            $data['email'],
+            $passwordHash,
+            $data['mobile_number'],
+            $data['alt_number'],
+            $data['address'],
+            $data['date_of_joining'],
+            $data['avatar_url'],
+            $data['is_active'],
+        ]);
+        $newId = (int)$pdo->lastInsertId();
 
-        $fetch = $pdo->prepare('SELECT *, 0 AS inventory_count FROM tag_master WHERE id = ?');
-        $fetch->execute([$id]);
-        Response::success($fetch->fetch(), 'Tag created.', 201);
+        $fetch = $pdo->prepare("SELECT id, name, email, role, mobile_number, alt_number, address, date_of_joining, avatar_url, is_active, created_at, 0 AS assigned_leads_count, 0 AS hot_leads_count, 0 AS visited_leads_count, 0 AS won_leads_count, 0 AS overdue_count FROM users WHERE id = ?");
+        $fetch->execute([$newId]);
+        Response::success($fetch->fetch(), 'Agent created successfully.', 201);
     }
 
-    if (preg_match('#^/tags/(\d+)$#', $route, $m)) {
-        $tagId = (int)$m[1];
+    if (preg_match('#^/agents/(\d+)$#', $route, $m)) {
+        $targetId = (int)$m[1];
+
+        if ($method === 'GET') {
+            $stmt = $pdo->prepare("SELECT id, name, email, role, mobile_number, alt_number, address, date_of_joining, avatar_url, is_active, created_at FROM users WHERE id = ? LIMIT 1");
+            $stmt->execute([$targetId]);
+            $agent = $stmt->fetch();
+            if (!$agent) {
+                Response::error('Agent not found.', 404);
+            }
+            Response::success($agent);
+        }
 
         if ($method === 'PUT') {
+            if ($currentUser['role'] !== 'admin' && (int)$currentUser['id'] !== $targetId) {
+                Response::error('Forbidden: You can only edit your own profile.', 403);
+            }
+
             $body = readJsonBody();
-            $validated = Validator::validateTag($body);
+            $validated = Validator::validateAgent($body, false);
             if (!empty($validated['errors'])) {
                 Response::error('Validation failed.', 422, $validated['errors']);
             }
             $data = $validated['data'];
 
-            $dup = $pdo->prepare('SELECT id FROM tag_master WHERE LOWER(name) = LOWER(?) AND id <> ? LIMIT 1');
-            $dup->execute([$data['name'], $tagId]);
-            if ($dup->fetch()) {
-                Response::error('Another tag with this name already exists.', 409, ['name' => 'Tag name must be unique.']);
+            $chk = $pdo->prepare('SELECT id FROM users WHERE email = ? AND id != ? LIMIT 1');
+            $chk->execute([$data['email'], $targetId]);
+            if ($chk->fetch()) {
+                Response::error('Another account is already using this email.', 422, ['email' => 'Email already registered.']);
             }
 
-            $stmt = $pdo->prepare('UPDATE tag_master SET name = ?, description = ?, color = ?, is_active = ? WHERE id = ?');
-            $stmt->execute([$data['name'], $data['description'], $data['color'], $data['is_active'], $tagId]);
+            $isActive = ($currentUser['role'] === 'admin') ? $data['is_active'] : 1;
 
-            $fetch = $pdo->prepare(
-                'SELECT t.*, COUNT(i.id) AS inventory_count
-                 FROM tag_master t
-                 LEFT JOIN inventory i ON i.tag_id = t.id
-                 WHERE t.id = ?
-                 GROUP BY t.id'
-            );
-            $fetch->execute([$tagId]);
-            $tag = $fetch->fetch();
-            if (!$tag) {
-                Response::error('Tag not found.', 404);
+            if ($data['password'] !== '') {
+                $newHash = password_hash($data['password'], PASSWORD_DEFAULT);
+                $upd = $pdo->prepare(
+                    'UPDATE users SET name = ?, email = ?, password_hash = ?, mobile_number = ?, alt_number = ?, address = ?, date_of_joining = ?, avatar_url = ?, is_active = ? WHERE id = ?'
+                );
+                $upd->execute([
+                    $data['name'],
+                    $data['email'],
+                    $newHash,
+                    $data['mobile_number'],
+                    $data['alt_number'],
+                    $data['address'],
+                    $data['date_of_joining'],
+                    $data['avatar_url'],
+                    $isActive,
+                    $targetId,
+                ]);
+            } else {
+                $upd = $pdo->prepare(
+                    'UPDATE users SET name = ?, email = ?, mobile_number = ?, alt_number = ?, address = ?, date_of_joining = ?, avatar_url = ?, is_active = ? WHERE id = ?'
+                );
+                $upd->execute([
+                    $data['name'],
+                    $data['email'],
+                    $data['mobile_number'],
+                    $data['alt_number'],
+                    $data['address'],
+                    $data['date_of_joining'],
+                    $data['avatar_url'],
+                    $isActive,
+                    $targetId,
+                ]);
             }
-            Response::success($tag, 'Tag updated.');
+
+            $fetch = $pdo->prepare("SELECT id, name, email, role, mobile_number, alt_number, address, date_of_joining, avatar_url, is_active, created_at FROM users WHERE id = ?");
+            $fetch->execute([$targetId]);
+            Response::success($fetch->fetch(), 'Agent profile updated.');
         }
 
         if ($method === 'DELETE') {
-            $stmt = $pdo->prepare('DELETE FROM tag_master WHERE id = ?');
-            $stmt->execute([$tagId]);
-            if ($stmt->rowCount() === 0) {
-                Response::error('Tag not found.', 404);
+            if ($currentUser['role'] !== 'admin') {
+                Response::error('Only admins can delete agent accounts.', 403);
             }
-            Response::success(null, 'Tag deleted.');
+            if ((int)$currentUser['id'] === $targetId) {
+                Response::error('You cannot delete your own admin account.', 422);
+            }
+
+            $delLeads = $pdo->prepare('UPDATE leads SET assigned_agent_id = NULL WHERE assigned_agent_id = ?');
+            $delLeads->execute([$targetId]);
+
+            $delSessions = $pdo->prepare('DELETE FROM user_sessions WHERE user_id = ?');
+            $delSessions->execute([$targetId]);
+
+            $delUser = $pdo->prepare('DELETE FROM users WHERE id = ?');
+            $delUser->execute([$targetId]);
+
+            Response::success(null, 'Agent account deleted.');
         }
+    }
+
+    if ($route === '/agents/upload-avatar' && $method === 'POST') {
+        if (empty($_FILES['avatar']['name'])) {
+            Response::error('No avatar file uploaded.', 422);
+        }
+
+        $file = $_FILES['avatar'];
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            Response::error('Upload error: code ' . $file['error'], 400);
+        }
+
+        if ($file['size'] > 1024 * 1024) {
+            Response::error('Avatar image must not exceed 1 MB.', 422);
+        }
+
+        $ext = strtolower(pathinfo($file['name'], PATHINFO_EXTENSION));
+        $allowedExts = ['jpg', 'jpeg', 'png', 'webp'];
+        if (!in_array($ext, $allowedExts, true)) {
+            Response::error('Invalid file type. Allowed: JPG, PNG, WEBP.', 422);
+        }
+
+        $finfo = finfo_open(FILEINFO_MIME_TYPE);
+        $mime = finfo_file($finfo, $file['tmp_name']);
+        finfo_close($finfo);
+        $allowedMimes = ['image/jpeg', 'image/png', 'image/webp'];
+        if (!in_array($mime, $allowedMimes, true)) {
+            Response::error('Invalid image content.', 422);
+        }
+
+        $baseUploadDir = is_dir(__DIR__ . '/../uploads') ? (__DIR__ . '/../uploads') : (dirname(__DIR__, 2) . '/uploads');
+        $avatarsDir = $baseUploadDir . '/avatars';
+        if (!is_dir($avatarsDir)) {
+            @mkdir($avatarsDir, 0755, true);
+        }
+
+        $safeName = 'avatar_' . $currentUser['id'] . '_' . bin2hex(random_bytes(6)) . '.' . $ext;
+        $destPath = $avatarsDir . '/' . $safeName;
+
+        if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+            Response::error('Failed to save uploaded avatar.', 500);
+        }
+
+        Response::success([
+            'url' => 'uploads/avatars/' . $safeName,
+            'filename' => $safeName,
+        ], 'Avatar uploaded successfully.');
     }
 
     // -------------------------------------------------------------------------
@@ -312,24 +577,13 @@ try {
             array_push($params, $like, $like, $like, $like, $like);
         }
 
-        if (isset($_GET['tag_id']) && $_GET['tag_id'] !== '') {
-            if ($_GET['tag_id'] === 'untagged') {
-                $where[] = 'i.tag_id IS NULL';
-            } else {
-                $where[] = 'i.tag_id = ?';
-                $params[] = (int)$_GET['tag_id'];
-            }
-        }
-
         $propType = trim((string)($_GET['property_type'] ?? ''));
         if ($propType !== '') {
             $where[] = 'i.property_type = ?';
             $params[] = $propType;
         }
 
-        $sql = 'SELECT i.*, t.name AS tag_name, t.description AS tag_description, t.color AS tag_color
-                FROM inventory i
-                LEFT JOIN tag_master t ON t.id = i.tag_id';
+        $sql = 'SELECT i.* FROM inventory i';
         if (!empty($where)) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
         }
@@ -358,17 +612,9 @@ try {
             );
         }
 
-        if ($data['tag_id'] !== null) {
-            $tagCheck = $pdo->prepare('SELECT id FROM tag_master WHERE id = ? LIMIT 1');
-            $tagCheck->execute([$data['tag_id']]);
-            if (!$tagCheck->fetch()) {
-                Response::error('Selected tag does not exist.', 422, ['tag_id' => 'Invalid tag selected.']);
-            }
-        }
-
         $stmt = $pdo->prepare(
-            'INSERT INTO inventory (unique_code, unit_number, title, property_type, location, floor_wing, area_sqft, price, tag_id, notes)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            'INSERT INTO inventory (unique_code, unit_number, title, property_type, location, floor_wing, area_sqft, price, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $data['unique_code'],
@@ -379,47 +625,13 @@ try {
             $data['floor_wing'],
             $data['area_sqft'],
             $data['price'],
-            $data['tag_id'],
             $data['notes'],
         ]);
         $newId = (int)$pdo->lastInsertId();
 
-        $fetch = $pdo->prepare(
-            'SELECT i.*, t.name AS tag_name, t.description AS tag_description, t.color AS tag_color
-             FROM inventory i LEFT JOIN tag_master t ON t.id = i.tag_id WHERE i.id = ?'
-        );
+        $fetch = $pdo->prepare('SELECT i.* FROM inventory i WHERE i.id = ?');
         $fetch->execute([$newId]);
         Response::success($fetch->fetch(), 'Inventory item added.', 201);
-    }
-
-    if (preg_match('#^/inventory/(\d+)/tag$#', $route, $m) && $method === 'PATCH') {
-        $invId = (int)$m[1];
-        $body = readJsonBody();
-        $tagId = isset($body['tag_id']) && $body['tag_id'] !== '' && $body['tag_id'] !== null
-            ? (int)$body['tag_id']
-            : null;
-
-        if ($tagId !== null) {
-            $tagCheck = $pdo->prepare('SELECT id FROM tag_master WHERE id = ? LIMIT 1');
-            $tagCheck->execute([$tagId]);
-            if (!$tagCheck->fetch()) {
-                Response::error('Selected tag does not exist.', 422);
-            }
-        }
-
-        $upd = $pdo->prepare('UPDATE inventory SET tag_id = ? WHERE id = ?');
-        $upd->execute([$tagId, $invId]);
-
-        $fetch = $pdo->prepare(
-            'SELECT i.*, t.name AS tag_name, t.description AS tag_description, t.color AS tag_color
-             FROM inventory i LEFT JOIN tag_master t ON t.id = i.tag_id WHERE i.id = ?'
-        );
-        $fetch->execute([$invId]);
-        $item = $fetch->fetch();
-        if (!$item) {
-            Response::error('Inventory item not found.', 404);
-        }
-        Response::success($item, 'Inventory tag updated.');
     }
 
     if (preg_match('#^/inventory/(\d+)$#', $route, $m)) {
@@ -449,18 +661,10 @@ try {
                 );
             }
 
-            if ($data['tag_id'] !== null) {
-                $tagCheck = $pdo->prepare('SELECT id FROM tag_master WHERE id = ? LIMIT 1');
-                $tagCheck->execute([$data['tag_id']]);
-                if (!$tagCheck->fetch()) {
-                    Response::error('Selected tag does not exist.', 422, ['tag_id' => 'Invalid tag selected.']);
-                }
-            }
-
             $stmt = $pdo->prepare(
                 'UPDATE inventory
                  SET unique_code = ?, unit_number = ?, title = ?, property_type = ?, location = ?,
-                     floor_wing = ?, area_sqft = ?, price = ?, tag_id = ?, notes = ?
+                     floor_wing = ?, area_sqft = ?, price = ?, notes = ?
                  WHERE id = ?'
             );
             $stmt->execute([
@@ -472,15 +676,11 @@ try {
                 $data['floor_wing'],
                 $data['area_sqft'],
                 $data['price'],
-                $data['tag_id'],
                 $data['notes'],
                 $invId,
             ]);
 
-            $fetch = $pdo->prepare(
-                'SELECT i.*, t.name AS tag_name, t.description AS tag_description, t.color AS tag_color
-                 FROM inventory i LEFT JOIN tag_master t ON t.id = i.tag_id WHERE i.id = ?'
-            );
+            $fetch = $pdo->prepare('SELECT i.* FROM inventory i WHERE i.id = ?');
             $fetch->execute([$invId]);
             Response::success($fetch->fetch(), 'Inventory item updated.');
         }
@@ -501,6 +701,23 @@ try {
     if ($route === '/leads' && $method === 'GET') {
         $where = [];
         $params = [];
+
+        if ($currentUser['role'] === 'agent') {
+            $where[] = 'l.assigned_agent_id = ?';
+            $params[] = (int)$currentUser['id'];
+        } elseif (isset($_GET['assigned_agent_id']) && $_GET['assigned_agent_id'] !== '') {
+            if ($_GET['assigned_agent_id'] === 'unassigned') {
+                $where[] = 'l.assigned_agent_id IS NULL';
+            } else {
+                $where[] = 'l.assigned_agent_id = ?';
+                $params[] = (int)$_GET['assigned_agent_id'];
+            }
+        }
+
+        if (isset($_GET['temperature']) && in_array($_GET['temperature'], ['Hot', 'Warm', 'Cold'], true)) {
+            $where[] = 'l.temperature = ?';
+            $params[] = $_GET['temperature'];
+        }
 
         $search = trim((string)($_GET['search'] ?? ''));
         if ($search !== '') {
@@ -549,13 +766,14 @@ try {
                        i.unique_code AS inv_unique_code,
                        i.unit_number AS inv_unit_number,
                        i.title AS inv_title,
-                       t.name AS inv_tag_name,
-                       t.color AS inv_tag_color,
+                       ag.name AS assigned_agent_name,
+                       ag.avatar_url AS assigned_agent_avatar,
+                       ag.mobile_number AS assigned_agent_mobile,
                        (SELECT COUNT(*) FROM lead_followups lf WHERE lf.lead_id = l.id) AS followup_count,
                        (SELECT MAX(lf.followup_at) FROM lead_followups lf WHERE lf.lead_id = l.id) AS last_followup_at
                 FROM leads l
                 LEFT JOIN inventory i ON i.id = l.interested_inventory_id
-                LEFT JOIN tag_master t ON t.id = i.tag_id';
+                LEFT JOIN users ag ON ag.id = l.assigned_agent_id';
 
         if (!empty($where)) {
             $sql .= ' WHERE ' . implode(' AND ', $where);
@@ -570,6 +788,24 @@ try {
     if ($route === '/followups/queue' && $method === 'GET') {
         $scope = trim((string)($_GET['scope'] ?? 'all'));
         $where = ["l.needs_followup = 1", "l.status NOT IN ('Closed Won', 'Closed Lost')"];
+        $params = [];
+
+        if ($currentUser['role'] === 'agent') {
+            $where[] = 'l.assigned_agent_id = ?';
+            $params[] = (int)$currentUser['id'];
+        } elseif (isset($_GET['assigned_agent_id']) && $_GET['assigned_agent_id'] !== '') {
+            if ($_GET['assigned_agent_id'] === 'unassigned') {
+                $where[] = 'l.assigned_agent_id IS NULL';
+            } else {
+                $where[] = 'l.assigned_agent_id = ?';
+                $params[] = (int)$_GET['assigned_agent_id'];
+            }
+        }
+
+        if (isset($_GET['temperature']) && in_array($_GET['temperature'], ['Hot', 'Warm', 'Cold'], true)) {
+            $where[] = 'l.temperature = ?';
+            $params[] = $_GET['temperature'];
+        }
 
         if ($scope === 'overdue') {
             $where[] = 'l.next_followup_at IS NOT NULL AND l.next_followup_at < NOW()';
@@ -583,14 +819,19 @@ try {
                        i.unique_code AS inv_unique_code,
                        i.unit_number AS inv_unit_number,
                        i.title AS inv_title,
+                       ag.name AS assigned_agent_name,
+                       ag.avatar_url AS assigned_agent_avatar,
+                       ag.mobile_number AS assigned_agent_mobile,
                        (SELECT COUNT(*) FROM lead_followups lf WHERE lf.lead_id = l.id) AS followup_count,
                        (SELECT lf.notes FROM lead_followups lf WHERE lf.lead_id = l.id ORDER BY lf.followup_at DESC, lf.id DESC LIMIT 1) AS last_followup_notes
                 FROM leads l
                 LEFT JOIN inventory i ON i.id = l.interested_inventory_id
+                LEFT JOIN users ag ON ag.id = l.assigned_agent_id
                 WHERE ' . implode(' AND ', $where) . '
                 ORDER BY (l.next_followup_at IS NULL) ASC, l.next_followup_at ASC';
 
-        $stmt = $pdo->query($sql);
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
         Response::success($stmt->fetchAll());
     }
 
@@ -610,12 +851,17 @@ try {
             }
         }
 
+        $assignedAgentId = $data['assigned_agent_id'];
+        if ($currentUser['role'] === 'agent' && $assignedAgentId === null) {
+            $assignedAgentId = (int)$currentUser['id'];
+        }
+
         $stmt = $pdo->prepare(
             'INSERT INTO leads (
                 full_name, phone, email, source, budget_min, budget_max,
-                preferred_location, property_requirement, interested_inventory_id,
-                is_visited, visited_at, needs_followup, next_followup_at, status, notes
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+                preferred_location, property_requirement, interested_inventory_id, assigned_agent_id,
+                is_visited, visited_at, needs_followup, next_followup_at, status, temperature, notes
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $data['full_name'],
@@ -627,19 +873,25 @@ try {
             $data['preferred_location'],
             $data['property_requirement'],
             $data['interested_inventory_id'],
+            $assignedAgentId,
             $data['is_visited'],
             $data['visited_at'],
             $data['needs_followup'],
             $data['next_followup_at'],
             $data['status'],
+            $data['temperature'],
             $data['notes'],
         ]);
         $leadId = (int)$pdo->lastInsertId();
 
         $fetch = $pdo->prepare(
             'SELECT l.*, i.unique_code AS inv_unique_code, i.unit_number AS inv_unit_number, i.title AS inv_title,
+                    ag.name AS assigned_agent_name, ag.avatar_url AS assigned_agent_avatar,
                     0 AS followup_count
-             FROM leads l LEFT JOIN inventory i ON i.id = l.interested_inventory_id WHERE l.id = ?'
+             FROM leads l
+             LEFT JOIN inventory i ON i.id = l.interested_inventory_id
+             LEFT JOIN users ag ON ag.id = l.assigned_agent_id
+             WHERE l.id = ?'
         );
         $fetch->execute([$leadId]);
         Response::success($fetch->fetch(), 'Lead created.', 201);
@@ -807,22 +1059,85 @@ try {
         Response::success(null, 'Follow-up deleted.');
     }
 
+    if (preg_match('#^/leads/(\d+)/temperature$#', $route, $m) && $method === 'PATCH') {
+        $leadId = (int)$m[1];
+        $body = readJsonBody();
+        $temp = trim((string)($body['temperature'] ?? ''));
+        if (!in_array($temp, ['Hot', 'Warm', 'Cold'], true)) {
+            Response::error('Invalid temperature. Must be Hot, Warm, or Cold.', 422);
+        }
+
+        $chk = $pdo->prepare('SELECT id, assigned_agent_id FROM leads WHERE id = ? LIMIT 1');
+        $chk->execute([$leadId]);
+        $lead = $chk->fetch();
+        if (!$lead) {
+            Response::error('Lead not found.', 404);
+        }
+        if ($currentUser['role'] === 'agent' && (int)$lead['assigned_agent_id'] !== (int)$currentUser['id']) {
+            Response::error('Forbidden: Lead is not assigned to you.', 403);
+        }
+
+        $upd = $pdo->prepare('UPDATE leads SET temperature = ? WHERE id = ?');
+        $upd->execute([$temp, $leadId]);
+        Response::success(['id' => $leadId, 'temperature' => $temp], 'Lead marked as ' . $temp);
+    }
+
+    if (preg_match('#^/leads/(\d+)/assign$#', $route, $m) && $method === 'PATCH') {
+        if ($currentUser['role'] !== 'admin') {
+            Response::error('Only admins can assign leads to agents.', 403);
+        }
+        $leadId = (int)$m[1];
+        $body = readJsonBody();
+        $agentIdRaw = $body['assigned_agent_id'] ?? null;
+        $agentId = ($agentIdRaw !== null && $agentIdRaw !== '' && is_numeric($agentIdRaw) && (int)$agentIdRaw > 0)
+            ? (int)$agentIdRaw
+            : null;
+
+        $chk = $pdo->prepare('SELECT id FROM leads WHERE id = ? LIMIT 1');
+        $chk->execute([$leadId]);
+        if (!$chk->fetch()) {
+            Response::error('Lead not found.', 404);
+        }
+
+        $agentName = null;
+        if ($agentId !== null) {
+            $uChk = $pdo->prepare("SELECT id, name FROM users WHERE id = ? AND role = 'agent' AND is_active = 1 LIMIT 1");
+            $uChk->execute([$agentId]);
+            $u = $uChk->fetch();
+            if (!$u) {
+                Response::error('Selected agent was not found or is inactive.', 422);
+            }
+            $agentName = $u['name'];
+        }
+
+        $upd = $pdo->prepare('UPDATE leads SET assigned_agent_id = ? WHERE id = ?');
+        $upd->execute([$agentId, $leadId]);
+        Response::success([
+            'id' => $leadId,
+            'assigned_agent_id' => $agentId,
+            'assigned_agent_name' => $agentName,
+        ], $agentId ? ('Lead assigned to ' . $agentName) : 'Lead unassigned.');
+    }
+
     if (preg_match('#^/leads/(\d+)$#', $route, $m)) {
         $leadId = (int)$m[1];
 
         if ($method === 'GET') {
             $stmt = $pdo->prepare(
                 'SELECT l.*, i.unique_code AS inv_unique_code, i.unit_number AS inv_unit_number, i.title AS inv_title,
-                        t.name AS inv_tag_name, t.color AS inv_tag_color
+                        ag.name AS assigned_agent_name, ag.avatar_url AS assigned_agent_avatar, ag.mobile_number AS assigned_agent_mobile
                  FROM leads l
                  LEFT JOIN inventory i ON i.id = l.interested_inventory_id
-                 LEFT JOIN tag_master t ON t.id = i.tag_id
+                 LEFT JOIN users ag ON ag.id = l.assigned_agent_id
                  WHERE l.id = ? LIMIT 1'
             );
             $stmt->execute([$leadId]);
             $lead = $stmt->fetch();
             if (!$lead) {
                 Response::error('Lead not found.', 404);
+            }
+            if ($currentUser['role'] === 'agent' && (int)$lead['assigned_agent_id'] !== (int)$currentUser['id']) {
+                Response::error('Forbidden: This lead is not assigned to you.', 403);
             }
 
             $fStmt = $pdo->prepare(
@@ -839,11 +1154,15 @@ try {
         }
 
         if ($method === 'PUT') {
-            $existingStmt = $pdo->prepare('SELECT id, next_followup_at, reminder_sent_for FROM leads WHERE id = ? LIMIT 1');
+            $existingStmt = $pdo->prepare('SELECT id, assigned_agent_id, next_followup_at, reminder_sent_for FROM leads WHERE id = ? LIMIT 1');
             $existingStmt->execute([$leadId]);
             $existing = $existingStmt->fetch();
             if (!$existing) {
                 Response::error('Lead not found.', 404);
+            }
+
+            if ($currentUser['role'] === 'agent' && (int)$existing['assigned_agent_id'] !== (int)$currentUser['id']) {
+                Response::error('Forbidden: You can only edit leads assigned to you.', 403);
             }
 
             $body = readJsonBody();
@@ -861,6 +1180,10 @@ try {
                 }
             }
 
+            $assignedAgentId = ($currentUser['role'] === 'admin')
+                ? $data['assigned_agent_id']
+                : (int)$existing['assigned_agent_id'];
+
             $reminderSentFor = ($data['next_followup_at'] === $existing['next_followup_at'])
                 ? $existing['reminder_sent_for']
                 : null;
@@ -868,9 +1191,9 @@ try {
             $stmt = $pdo->prepare(
                 'UPDATE leads
                  SET full_name = ?, phone = ?, email = ?, source = ?, budget_min = ?, budget_max = ?,
-                     preferred_location = ?, property_requirement = ?, interested_inventory_id = ?,
+                     preferred_location = ?, property_requirement = ?, interested_inventory_id = ?, assigned_agent_id = ?,
                      is_visited = ?, visited_at = ?, needs_followup = ?, next_followup_at = ?,
-                     status = ?, notes = ?, reminder_sent_for = ?
+                     status = ?, temperature = ?, notes = ?, reminder_sent_for = ?
                  WHERE id = ?'
             );
             $stmt->execute([
@@ -883,11 +1206,13 @@ try {
                 $data['preferred_location'],
                 $data['property_requirement'],
                 $data['interested_inventory_id'],
+                $assignedAgentId,
                 $data['is_visited'],
                 $data['visited_at'],
                 $data['needs_followup'],
                 $data['next_followup_at'],
                 $data['status'],
+                $data['temperature'],
                 $data['notes'],
                 $reminderSentFor,
                 $leadId,
@@ -895,8 +1220,12 @@ try {
 
             $fetch = $pdo->prepare(
                 'SELECT l.*, i.unique_code AS inv_unique_code, i.unit_number AS inv_unit_number, i.title AS inv_title,
+                        ag.name AS assigned_agent_name, ag.avatar_url AS assigned_agent_avatar,
                         (SELECT COUNT(*) FROM lead_followups lf WHERE lf.lead_id = l.id) AS followup_count
-                 FROM leads l LEFT JOIN inventory i ON i.id = l.interested_inventory_id WHERE l.id = ?'
+                 FROM leads l
+                 LEFT JOIN inventory i ON i.id = l.interested_inventory_id
+                 LEFT JOIN users ag ON ag.id = l.assigned_agent_id
+                 WHERE l.id = ?'
             );
             $fetch->execute([$leadId]);
             Response::success($fetch->fetch(), 'Lead updated.');

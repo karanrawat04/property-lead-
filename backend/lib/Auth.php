@@ -61,7 +61,7 @@ class Auth
 
         $tokenHash = hash('sha256', $token);
         $stmt = $pdo->prepare(
-            'SELECT u.id, u.name, u.email, u.role, u.is_active, s.expires_at
+            'SELECT u.id, u.name, u.email, u.role, u.mobile_number, u.alt_number, u.address, u.date_of_joining, u.avatar_url, u.is_active, s.expires_at
              FROM user_sessions s
              INNER JOIN users u ON u.id = s.user_id
              WHERE s.token_hash = ? AND s.expires_at > NOW() AND u.is_active = 1

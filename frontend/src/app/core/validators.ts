@@ -154,3 +154,78 @@ export function formatBudgetRange(min: number | null | undefined, max: number | 
   }
   return `Up to ${fmt(max!)}`;
 }
+
+/**
+ * KeyboardEvent handler that prevents typing non-numeric characters.
+ * When allowDecimal is true, a single '.' is also permitted.
+ */
+export function handleNumericKeydown(event: KeyboardEvent, allowDecimal: boolean = false): void {
+  const allowedControlKeys = [
+    'Backspace',
+    'Delete',
+    'Tab',
+    'Escape',
+    'Enter',
+    'ArrowLeft',
+    'ArrowRight',
+    'ArrowUp',
+    'ArrowDown',
+    'Home',
+    'End',
+  ];
+
+  if (
+    allowedControlKeys.includes(event.key) ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  ) {
+    return;
+  }
+
+  if (allowDecimal && event.key === '.') {
+    const target = event.target as HTMLInputElement | null;
+    if (target && !target.value.includes('.')) {
+      return;
+    }
+    event.preventDefault();
+    return;
+  }
+
+  if (!/^[0-9]$/.test(event.key)) {
+    event.preventDefault();
+  }
+}
+
+/**
+ * KeyboardEvent handler that allows only phone characters: digits, +, -, spaces, (, ).
+ */
+export function handlePhoneKeydown(event: KeyboardEvent): void {
+  const allowedControlKeys = [
+    'Backspace',
+    'Delete',
+    'Tab',
+    'Escape',
+    'Enter',
+    'ArrowLeft',
+    'ArrowRight',
+    'ArrowUp',
+    'ArrowDown',
+    'Home',
+    'End',
+  ];
+
+  if (
+    allowedControlKeys.includes(event.key) ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  ) {
+    return;
+  }
+
+  if (!/^[0-9+\-\s()]$/.test(event.key)) {
+    event.preventDefault();
+  }
+}
+

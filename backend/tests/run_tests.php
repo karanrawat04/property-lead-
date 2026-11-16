@@ -64,15 +64,7 @@ assertTrue(empty($inv['errors']), 'Valid inventory passes');
 assertTrue($inv['data']['unique_code'] === 'T1-410C', 'Unique code uppercased');
 assertTrue($inv['data']['unit_number'] === '410 C', 'Unit number preserved as 410 C');
 
-// 5. Tag validation
-$tag = Validator::validateTag([
-    'name' => 'For Sale',
-    'description' => 'Available to buy',
-    'color' => '#16a34a',
-]);
-assertTrue(empty($tag['errors']), 'Valid tag passes');
-
-// 6. Crypto roundtrip
+// 5. Crypto roundtrip
 $secret = 'test_secret_key_for_unit_test';
 $enc = Crypto::encrypt('my-smtp-app-password', $secret);
 assertTrue($enc !== 'my-smtp-app-password' && $enc !== '', 'Crypto encrypts value');
@@ -82,6 +74,40 @@ assertTrue(Crypto::decrypt($enc, $secret) === 'my-smtp-app-password', 'Crypto de
 $emailParsed = Validator::parseEmailList("one@example.com, two@example.com; ONE@example.com\nbad-email");
 assertTrue($emailParsed['emails'] === ['one@example.com', 'two@example.com'], 'Deduplicates valid email list');
 assertTrue($emailParsed['invalid'] === ['bad-email'], 'Reports invalid emails in list');
+
+// 8. Agent validation: requires valid name, email, and min 6 char password
+$agentInvalid = Validator::validateAgent([
+    'name' => 'A',
+    'email' => 'not-an-email',
+    'password' => '123',
+], true);
+assertTrue(isset($agentInvalid['errors']['name']), 'Agent rejects 1-char name');
+assertTrue(isset($agentInvalid['errors']['email']), 'Agent rejects invalid email');
+assertTrue(isset($agentInvalid['errors']['password']), 'Agent rejects short password');
+
+// 9. Valid agent with DD/MM/YYYY date of joining
+$agentValid = Validator::validateAgent([
+    'name' => 'Rahul Verma',
+    'email' => 'rahul@realestate.com',
+    'password' => 'AgentPass123!',
+    'mobile_number' => '+91 9876543210',
+    'alt_number' => '011-23456789',
+    'address' => 'Sector 62, Noida, UP',
+    'date_of_joining' => '15/11/2026',
+], true);
+assertTrue(empty($agentValid['errors']), 'Valid agent passes validation');
+assertTrue($agentValid['data']['date_of_joining'] === '2026-11-15', 'Agent date_of_joining normalized from DD/MM/YYYY');
+
+// 10. Lead temperature and agent assignment validation
+$leadWithTemp = Validator::validateLead([
+    'full_name' => 'Kavita Singh',
+    'phone' => '9988776655',
+    'temperature' => 'Hot',
+    'assigned_agent_id' => 4,
+]);
+assertTrue(empty($leadWithTemp['errors']), 'Lead with temperature and agent passes');
+assertTrue($leadWithTemp['data']['temperature'] === 'Hot', 'Lead temperature preserved as Hot');
+assertTrue($leadWithTemp['data']['assigned_agent_id'] === 4, 'Assigned agent ID preserved as 4');
 
 echo "All backend unit checks passed.\n";
 

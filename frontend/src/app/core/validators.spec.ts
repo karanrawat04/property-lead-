@@ -1,6 +1,8 @@
 import {
   formatBudgetRange,
   formatIstDateTime,
+  handleNumericKeydown,
+  handlePhoneKeydown,
   isBudgetRangeValid,
   isValidIstDateTimeValue,
   parseDdMmYyyy,
@@ -53,5 +55,63 @@ describe('Validators', () => {
     const bad = parseEmailList('valid@test.com, not-an-email');
     expect(bad.emails).toEqual(['valid@test.com']);
     expect(bad.invalid).toEqual(['not-an-email']);
+  });
+
+  it('prevents non-numeric key inputs in numeric fields', () => {
+    let prevented = false;
+    const mockEventChar = {
+      key: 'a',
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      target: document.createElement('input'),
+      preventDefault: () => {
+        prevented = true;
+      },
+    } as unknown as KeyboardEvent;
+    handleNumericKeydown(mockEventChar, true);
+    expect(prevented).toBe(true);
+
+    let allowedDigit = true;
+    const mockEventDigit = {
+      key: '5',
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      target: document.createElement('input'),
+      preventDefault: () => {
+        allowedDigit = false;
+      },
+    } as unknown as KeyboardEvent;
+    handleNumericKeydown(mockEventDigit, true);
+    expect(allowedDigit).toBe(true);
+  });
+
+  it('allows phone characters and prevents invalid letters in phone fields', () => {
+    let prevented = false;
+    const mockEventLetter = {
+      key: 'x',
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      preventDefault: () => {
+        prevented = true;
+      },
+    } as unknown as KeyboardEvent;
+    handlePhoneKeydown(mockEventLetter);
+    expect(prevented).toBe(true);
+
+    let allowedPlus = true;
+    const mockEventPlus = {
+      key: '+',
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      preventDefault: () => {
+        allowedPlus = false;
+      },
+    } as unknown as KeyboardEvent;
+    handlePhoneKeydown(mockEventPlus);
+    expect(allowedPlus).toBe(true);
   });
 });
